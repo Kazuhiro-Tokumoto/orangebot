@@ -1,0 +1,82 @@
+# --- 依存関係 ---
+node_modules/
+.pnp/
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/releases
+!.yarn/plugins
+!.yarn/versions
+
+# --- ビルド成果物 ---
+dist/
+build/
+out/
+lib/
+coverage/
+*.tsbuildinfo
+
+# --- キャッシュ ---
+.cache/
+.temp/
+.tmp/
+.eslintcache
+.stylelintcache
+.parcel-cache/
+.rollup.cache/
+.vite/
+.vitest/
+.turbo/
+.next/
+.nuxt/
+.svelte-kit/
+
+# --- 環境変数・秘密情報 ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets.json
+
+# --- ログ ---
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# --- テスト・カバレッジ ---
+.nyc_output/
+junit.xml
+
+# --- エディタ / IDE ---
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# --- Claude Code のローカル設定 ---
+.claude/settings.local.json
+
+# --- ローカル作業用 ---
+*.local
+tmp/
+scratch/
