@@ -192,3 +192,19 @@ export const wallets = sqliteTable('wallets', {
 });
 
 export type WalletRow = typeof wallets.$inferSelect;
+
+export const posts = sqliteTable('posts', {
+  id: text('id').primaryKey(),
+  authorId: text('author_id')
+    .notNull()
+    .references(() => members.id),
+  /** 返信先。先頭の投稿なら null。 */
+  parentId: text('parent_id'),
+  /** スレッドの先頭。先頭の投稿なら null。 */
+  rootId: text('root_id'),
+  body: text('body').notNull(),
+  createdAt: integer('created_at').notNull(),
+  deletedAt: integer('deleted_at'),
+});
+
+export type PostRow = typeof posts.$inferSelect;

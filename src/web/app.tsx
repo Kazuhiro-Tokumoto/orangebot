@@ -18,6 +18,7 @@ import { enrollRoutes } from './routes/enroll.js';
 import { loginRoutes } from './routes/login.js';
 import { proposalRoutes } from './routes/proposals.js';
 import { settingsRoutes } from './routes/settings.js';
+import { socialRoutes } from './routes/social.js';
 import { walletRoutes } from './routes/wallet.js';
 import { Layout } from './views/layout.js';
 import { StatusPage, type WalletSummary } from './views/status.js';
@@ -74,6 +75,7 @@ export function createApp(input: AppDeps) {
   app.route('/', proposalRoutes(deps));
   app.route('/', settingsRoutes(deps));
   app.route('/', walletRoutes(deps));
+  app.route('/', socialRoutes(deps));
 
   app.notFound((c) =>
     c.html(

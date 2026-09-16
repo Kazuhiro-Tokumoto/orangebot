@@ -168,6 +168,8 @@ export function transfer(
     readonly from: string;
     readonly to: string;
     readonly amount: bigint;
+    /** 由来。投げ銭なら 'post:<id>'。 */
+    readonly ref?: string;
     readonly memo?: string;
     readonly now?: number;
   },
@@ -188,6 +190,7 @@ export function transfer(
 
     const txId = post(tx, {
       kind: 'transfer',
+      ref: input.ref ?? null,
       memo: input.memo ?? '',
       now,
       movements: [
@@ -200,7 +203,7 @@ export function transfer(
       at: now,
       actorMemberId: input.from,
       action: 'ledger.transfer',
-      detail: { to: input.to, amount: input.amount.toString() },
+      detail: { to: input.to, amount: input.amount.toString(), ref: input.ref ?? null },
     });
 
     return { ok: true, txId };

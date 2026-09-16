@@ -5,11 +5,14 @@ import type { LinkMessage, Notifier } from '../bot/notify.js';
 import type { RpcClient } from '../wallet/rpc.js';
 import { countUnused } from '../auth/recovery.js';
 import { listSessions } from '../auth/session.js';
-import { TOTP_PERIOD, loadSecret } from '../auth/totp.js';
+import { setPassword } from '../auth/credentials.js';
+import { TOTP_PERIOD, generateSecret, loadSecret, storeSecret } from '../auth/totp.js';
 import { openTestDatabase, type Database_ } from '../db/client.js';
 import { getMemberByUsername, listAllMembers } from '../db/members.js';
 import { loadEnv, type Env } from '../env.js';
+import { balanceOf, mint } from '../domain/ledger.js';
 import { createGenesisMember } from '../domain/members.js';
+import { members } from '../db/schema.js';
 import { createApp } from './app.js';
 
 /**
@@ -169,13 +172,17 @@ async function enroll(token: string, password = PASSWORD): Promise<void> {
 
 /** パスワードと二要素を通したクライアントを返す。 */
 async function signIn(password = PASSWORD): Promise<Client> {
+  return signInAs('kazuhiro-tokumoto', GENESIS_DISCORD_ID, password);
+}
+
+async function signInAs(username: string, memberId: string, password = PASSWORD): Promise<Client> {
   const client = new Client();
 
-  const first = await client.post('/login', { username: 'kazuhiro-tokumoto', password });
+  const first = await client.post('/login', { username, password });
   expect(first.status).toBe(302);
   expect(first.headers.get('location')).toBe('/login/totp');
 
-  const second = await client.post('/login/totp', { code: codeFor(GENESIS_DISCORD_ID) });
+  const second = await client.post('/login/totp', { code: codeFor(memberId) });
   expect(second.status).toBe(302);
   expect(second.headers.get('location')).toBe('/proposals');
 
@@ -719,5 +726,159 @@ describe('ウォレット', () => {
 
     expect(html).toContain('OAG の残高');
     expect(html).toContain('7');
+  });
+});
+
+describe('タイムライン', () => {
+  const BRAVO_ID = '1700000000000000001';
+
+  /** 2 人目のメンバーを、登録を済ませた状態で直に置く。 */
+  async function addBravo(): Promise<void> {
+    handle.db
+      .insert(members)
+      .values({
+        id: BRAVO_ID,
+        username: 'bravo',
+        displayName: 'ブラボー',
+        status: 'active',
+        createdAt: Date.now(),
+        activatedAt: Date.now(),
+      })
+      .run();
+    const set = await setPassword(handle.db, { memberId: BRAVO_ID, password: PASSWORD });
+    expect(set.ok).toBe(true);
+    storeSecret(handle.db, {
+      memberId: BRAVO_ID,
+      secret: generateSecret(),
+      key: env.encryptionKey,
+      confirmed: true,
+    });
+  }
+
+  /** タイムラインに投稿して、その投稿の ID を返す。 */
+  async function postAs(client: Client, body: string): Promise<string> {
+    const res = await client.post('/timeline', { body });
+    expect(res.headers.get('location')).toBe('/timeline?done=posted');
+
+    const html = await (await client.get('/timeline')).text();
+    const id = /href="\/posts\/([0-9a-f-]{36})"/.exec(html)?.[1];
+    if (id === undefined) throw new Error('投稿が見つかりません');
+    return id;
+  }
+
+  beforeEach(async () => {
+    await enroll(bootstrap());
+  });
+
+  it('ログインしていなければ読めない', async () => {
+    const res = await new Client().get('/timeline');
+    expect(res.headers.get('location')).toBe('/login');
+  });
+
+  it('投稿すると時系列に出る', async () => {
+    const client = await signIn();
+    await postAs(client, '最初の投稿です');
+
+    const html = await (await client.get('/timeline?done=posted')).text();
+    expect(html).toContain('最初の投稿です');
+    expect(html).toContain('投稿しました');
+  });
+
+  it('本文は HTML として解釈されない', async () => {
+    const client = await signIn();
+    await postAs(client, '<script>alert(1)</script>');
+
+    const html = await (await client.get('/timeline')).text();
+    expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('空の投稿は断る', async () => {
+    const client = await signIn();
+    const res = await client.post('/timeline', { body: '   ' });
+    expect(res.status).toBe(400);
+  });
+
+  it('返信するとスレッドに並ぶ', async () => {
+    const client = await signIn();
+    const root = await postAs(client, 'スレッドの先頭');
+
+    const res = await client.post(`/posts/${root}/reply`, { parentId: root, body: '返信です' });
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')?.startsWith(`/posts/${root}?done=replied#`)).toBe(true);
+
+    const thread = await (await client.get(`/posts/${root}`)).text();
+    expect(thread).toContain('スレッドの先頭');
+    expect(thread).toContain('返信です');
+  });
+
+  it('別のスレッドの投稿を返信先に指されても断る', async () => {
+    const client = await signIn();
+    const first = await postAs(client, 'ひとつ目');
+    const second = await postAs(client, 'ふたつ目');
+
+    const res = await client.post(`/posts/${first}/reply`, { parentId: second, body: 'まぎれ込み' });
+    expect(res.status).toBe(400);
+  });
+
+  it('他人の投稿に BOAG を投げると残高が動く', async () => {
+    await addBravo();
+    const author = await signIn();
+    const root = await postAs(author, 'いい話をします');
+
+    mint(handle.db, { to: BRAVO_ID, amount: 50n, ref: 'test' });
+    const bravo = await signInAs('bravo', BRAVO_ID);
+
+    const res = await bravo.post(`/posts/${root}/tip`, { amount: '20' });
+    expect(res.headers.get('location')).toBe(`/posts/${root}?done=tipped#${root}`);
+    expect(balanceOf(handle.db, BRAVO_ID)).toBe(30n);
+    expect(balanceOf(handle.db, GENESIS_DISCORD_ID)).toBe(20n);
+
+    const thread = await (await bravo.get(`/posts/${root}`)).text();
+    expect(thread).toContain('投げ銭 20 BOAG');
+  });
+
+  it('残高を超える投げ銭は断る', async () => {
+    await addBravo();
+    const author = await signIn();
+    const root = await postAs(author, 'いい話をします');
+
+    const bravo = await signInAs('bravo', BRAVO_ID);
+    const res = await bravo.post(`/posts/${root}/tip`, { amount: '1' });
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain('残高が足りません');
+  });
+
+  it('自分の投稿には投げ銭の欄が出ない', async () => {
+    const client = await signIn();
+    const root = await postAs(client, '自分の');
+
+    const thread = await (await client.get(`/posts/${root}`)).text();
+    expect(thread).not.toContain('BOAG を投げる');
+    expect(thread).toContain('消す');
+  });
+
+  it('自分の投稿は消せるが、他人のものは消せない', async () => {
+    await addBravo();
+    const author = await signIn();
+    const root = await postAs(author, '消されるかもしれない');
+
+    const bravo = await signInAs('bravo', BRAVO_ID);
+    const denied = await bravo.post(`/posts/${root}/delete`, {});
+    expect(denied.status).toBe(400);
+
+    const allowed = await author.post(`/posts/${root}/delete`, {});
+    expect(allowed.headers.get('location')).toBe(`/posts/${root}?done=deleted`);
+
+    const thread = await (await author.get(`/posts/${root}`)).text();
+    expect(thread).toContain('この投稿は消されました');
+    expect(thread).not.toContain('消されるかもしれない');
+  });
+
+  it('無い投稿は 404', async () => {
+    const client = await signIn();
+    const res = await client.get('/posts/00000000-0000-0000-0000-000000000000');
+    expect(res.status).toBe(404);
   });
 });

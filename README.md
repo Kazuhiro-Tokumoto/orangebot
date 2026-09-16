@@ -223,6 +223,24 @@ WantedBy=multi-user.target
 
 ---
 
+## タイムライン
+
+メンバーだけが読み書きできる投稿の場。`/timeline` に置いてある。
+
+- 投稿は 1000 文字まで。本文は HTML として解釈せず、そのまま文字として出す
+- 返信は何段でも繋がり、画面ではスレッドの先頭の下に古い順で並ぶ
+- 消せるのは自分の投稿だけ。行は残して本文だけ空にするので、返信の繋がりは切れない
+
+### 投げ銭
+
+他人の投稿に BOAG を投げると、書き手の口座へそのまま移る。自分の投稿には投げられない。
+残高を超える額や、整数でない額は断る。
+
+投稿の側には金額を持たない。台帳の送金行の `ref` に `post:<投稿 ID>` を入れ、合計はそこから数える。
+台帳と投稿の表示が食い違う余地を作らないため。投稿を消しても、付いた投げ銭の記録と移った残高はそのまま残る。
+
+---
+
 ## Discord
 
 bot は**送るだけ**で、受け取らない。interaction も message も購読していないので、
@@ -378,6 +396,8 @@ src/
   domain/
     governance.ts         ★ 過半数判定。DB に依存しない純粋関数
     proposals.ts          提案の作成・投票・実行
+    ledger.ts             BOAG の複式台帳
+    social.ts             投稿・返信・投げ銭
     members.ts  tickets.ts  audit.ts
   auth/
     password.ts           argon2id
@@ -390,7 +410,7 @@ src/
   web/
     app.tsx               Hono の組み立てと状態画面
     context.ts            セッションの読み出しと入場制限
-    routes/               enroll / login / proposals / settings
+    routes/               enroll / login / proposals / settings / wallet / social
     views/                画面の部品と埋め込む script
   wallet/
     seed.ts  address.ts    鍵の導出と bech32m の住所

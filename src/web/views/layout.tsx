@@ -121,6 +121,9 @@ textarea.input { resize: vertical; }
 .steps li.now::before { background: var(--accent); color: #fff; }
 a.plain { color: var(--accent); }
 .bad-text { color: var(--bad); }
+.post-body { white-space: pre-wrap; overflow-wrap: anywhere; margin: 10px 0; }
+.post-meta { gap: 14px; font-size: 13.5px; }
+.post.replying { border-color: var(--accent); }
 .btn:disabled { filter: grayscale(.6); cursor: progress; }
 `;
 
@@ -154,7 +157,8 @@ export function Layout(props: LayoutProps) {
               ${
                 props.viewer === undefined
                   ? html`<a href="/login">ログイン</a>`
-                  : html`<a href="/proposals">提案</a>
+                  : html`<a href="/timeline">タイムライン</a>
+                      <a href="/proposals">提案</a>
                       <a href="/wallet">ウォレット</a>
                       <a href="/settings">設定</a>
                       <span class="muted">${props.viewer}</span>`

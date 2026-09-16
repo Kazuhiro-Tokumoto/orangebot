@@ -181,4 +181,24 @@ export const MIGRATIONS: readonly string[] = [
     created_by    TEXT REFERENCES members(id) ON DELETE SET NULL
   );
   `,
+
+  // --- 4: メンバーどうしの投稿 ---
+  `
+  -- 返信は parent_id で親を指し、root_id でスレッドの先頭を指す。
+  -- 先頭を直接持っておくと、スレッドひとつぶんを 1 回の問い合わせで引ける。
+  -- 消すときは行を残して本文だけ空にする。返信の繋がりと投げ銭の記録を壊さないため。
+  CREATE TABLE posts (
+    id          TEXT PRIMARY KEY,
+    author_id   TEXT NOT NULL REFERENCES members(id),
+    parent_id   TEXT REFERENCES posts(id),
+    root_id     TEXT REFERENCES posts(id),
+    body        TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    deleted_at  INTEGER
+  );
+  CREATE INDEX posts_timeline_idx ON posts (parent_id, created_at);
+  CREATE INDEX posts_root_idx ON posts (root_id, created_at);
+  -- 投げ銭は台帳の ref に 'post:<id>' を入れて辿る。
+  CREATE INDEX ledger_ref_idx ON ledger_entries (ref);
+  `,
 ];
