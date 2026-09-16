@@ -6,6 +6,9 @@
     "moduleResolution": "NodeNext",
     "types": ["node"],
 
+    "jsx": "react-jsx",
+    "jsxImportSource": "hono/jsx",
+
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
@@ -24,6 +27,6 @@
     "noEmit": true,
     "sourceMap": true
   },
-  "include": ["src/**/*.ts", "vitest.config.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "vitest.config.ts"],
   "exclude": ["node_modules", "dist"]
 }

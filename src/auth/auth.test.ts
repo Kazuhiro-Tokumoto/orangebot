@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { openTestDatabase, type Database_ } from '../db/client.js';
 import { setMemberStatus } from '../db/members.js';
-import { createGenesisMember } from '../domain/members.js';
+import { activateMember, createGenesisMember } from '../domain/members.js';
 import {
   MIN_PASSWORD_LENGTH,
   checkPasswordStrength,
@@ -33,12 +33,15 @@ function db() {
 beforeEach(() => {
   handle = openTestDatabase();
   const result = createGenesisMember(db(), {
+    discordId: '1529717434259345489',
     username: 'kazuhiro',
     displayName: '徳本 和寛',
     now: T0,
   });
   if (!result.ok) throw new Error(result.reason);
   memberId = result.member.id;
+  // genesis は登録待ちで始まる。テストでは登録が済んだものとして扱う。
+  activateMember(db(), memberId, T0);
 });
 
 describe('パスワードの強度', () => {
@@ -154,7 +157,11 @@ describe('セッション', () => {
 describe('二要素を通したときの引き上げ', () => {
   it('aal が 2 になり token が作り直される', () => {
     const first = createSession(db(), { memberId, aal: 1, now: T0 });
-    const second = upgradeSession(db(), { currentToken: first.token, factor: 'totp', now: T0 + 500 });
+    const second = upgradeSession(db(), {
+      currentToken: first.token,
+      factor: 'totp',
+      now: T0 + 500,
+    });
 
     expect(second).toBeDefined();
     expect(second?.token).not.toBe(first.token);

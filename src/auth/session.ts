@@ -139,7 +139,20 @@ export function upgradeSession(
 }
 
 export function destroySession(db: Db, token: string): void {
-  db.delete(sessions).where(eq(sessions.id, hashToken(token))).run();
+  db.delete(sessions)
+    .where(eq(sessions.id, hashToken(token)))
+    .run();
+}
+
+/** 設定画面に出す、そのメンバーの生きているセッション。新しい順。 */
+export function listSessions(db: Db, memberId: string, now = Date.now()): SessionRow[] {
+  return db
+    .select()
+    .from(sessions)
+    .where(eq(sessions.memberId, memberId))
+    .all()
+    .filter((row) => now < row.expiresAt && now - row.lastSeenAt < SESSION_IDLE_MS)
+    .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
 }
 
 /** パスワード変更や二要素の入れ替えのあと、他の端末を締め出す。 */

@@ -6,11 +6,11 @@ import { blob, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite
  */
 
 export const members = sqliteTable('members', {
+  /** Discord のユーザー ID。snowflake を文字列のまま持つ。 */
   id: text('id').primaryKey(),
   username: text('username').notNull().unique(),
   displayName: text('display_name').notNull(),
   status: text('status', { enum: ['pending', 'active', 'suspended', 'removed'] }).notNull(),
-  discordId: text('discord_id').unique(),
   createdAt: integer('created_at').notNull(),
   activatedAt: integer('activated_at'),
 });
@@ -161,3 +161,34 @@ export type TicketRow = typeof tickets.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type PasskeyRow = typeof passkeys.$inferSelect;
 export type AuditRow = typeof auditLog.$inferSelect;
+
+export const ledgerEntries = sqliteTable('ledger_entries', {
+  id: text('id').primaryKey(),
+  /** 同じ動きに属する行をまとめる識別子。行の合計は必ず 0 になる。 */
+  txId: text('tx_id').notNull(),
+  /** メンバー ID、または '@supply' のような特別口座。 */
+  accountId: text('account_id').notNull(),
+  /** 符号付き整数の 10 進文字列。BigInt で扱う。 */
+  amount: text('amount').notNull(),
+  kind: text('kind', { enum: ['mint', 'transfer', 'burn', 'exchange'] }).notNull(),
+  ref: text('ref'),
+  memo: text('memo').notNull().default(''),
+  createdAt: integer('created_at').notNull(),
+});
+
+export type LedgerRow = typeof ledgerEntries.$inferSelect;
+
+export const wallets = sqliteTable('wallets', {
+  id: text('id').primaryKey(),
+  network: text('network', { enum: ['mainnet', 'testnet', 'regtest'] }).notNull(),
+  account: integer('account').notNull().default(0),
+  /** 口座の拡張公開鍵。住所を作るのに使う。秘密は含まない。 */
+  xpub: text('xpub').notNull(),
+  /** パスフレーズで封じた控え。中身は wallet/vault.ts の形式。 */
+  vault: blob('vault', { mode: 'buffer' }).notNull(),
+  nextReceive: integer('next_receive').notNull().default(0),
+  createdAt: integer('created_at').notNull(),
+  createdBy: text('created_by').references(() => members.id, { onDelete: 'set null' }),
+});
+
+export type WalletRow = typeof wallets.$inferSelect;

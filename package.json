@@ -20,12 +20,17 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "commands:deploy": "tsx --env-file-if-exists=.env src/scripts/deploy-commands.ts",
-    "check": "npm run typecheck && npm run lint && npm run test"
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "bootstrap": "tsx --env-file-if-exists=.env src/scripts/bootstrap.ts",
+    "audit:verify": "tsx --env-file-if-exists=.env src/scripts/verify-audit.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
+    "@noble/curves": "^2.4.0",
     "@node-rs/argon2": "^2.2.1",
+    "@scure/base": "^2.4.0",
+    "@scure/bip32": "^2.4.0",
+    "@scure/bip39": "^2.4.0",
     "@simplewebauthn/browser": "^14.0.0",
     "@simplewebauthn/server": "^14.0.2",
     "better-sqlite3": "^13.0.3",

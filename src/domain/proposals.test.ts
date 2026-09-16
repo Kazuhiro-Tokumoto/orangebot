@@ -14,6 +14,14 @@ import {
 import { findUsableTicket } from './tickets.js';
 
 const T0 = 1_700_000_000_000;
+const KAZUHIRO_DISCORD_ID = '1529717434259345489';
+
+/** テスト用の連番 snowflake。実在の ID とぶつからないよう別の範囲から取る。 */
+let nextDiscordId = 1_700_000_000_000_000_000n;
+function fakeDiscordId(): string {
+  nextDiscordId += 1n;
+  return nextDiscordId.toString();
+}
 
 let handle: Database_;
 
@@ -32,7 +40,7 @@ function addActiveMember(proposer: string, username: string, now = T0): string {
   const result = createProposal(db(), {
     type: 'member.add',
     proposedBy: idOf(proposer),
-    payload: { username, displayName: username.toUpperCase() },
+    payload: { discordId: fakeDiscordId(), username, displayName: username.toUpperCase() },
     now,
   });
   if (!result.ok) throw new Error(`追加に失敗: ${result.reason}`);
@@ -63,16 +71,21 @@ function addActiveMember(proposer: string, username: string, now = T0): string {
 
 beforeEach(() => {
   handle = openTestDatabase();
-  createGenesisMember(db(), {
+  const genesis = createGenesisMember(db(), {
+    discordId: KAZUHIRO_DISCORD_ID,
     username: 'kazuhiro',
     displayName: '徳本 和寛',
     now: T0,
   });
+  if (!genesis.ok) throw new Error(genesis.reason);
+  // genesis は登録待ちで始まる。登録リンクを踏んだところまで進めておく。
+  activateMember(db(), genesis.member.id, T0);
 });
 
 describe('最初の 1 人', () => {
   it('genesis で作れるのは 1 回だけ', () => {
     const second = createGenesisMember(db(), {
+      discordId: fakeDiscordId(),
       username: 'someone',
       displayName: 'Someone',
       now: T0,
@@ -84,7 +97,7 @@ describe('最初の 1 人', () => {
     const result = createProposal(db(), {
       type: 'member.add',
       proposedBy: idOf('kazuhiro'),
-      payload: { username: 'second', displayName: 'Second' },
+      payload: { discordId: fakeDiscordId(), username: 'second', displayName: 'Second' },
       now: T0,
     });
 
@@ -98,7 +111,7 @@ describe('最初の 1 人', () => {
     createProposal(db(), {
       type: 'member.add',
       proposedBy: idOf('kazuhiro'),
-      payload: { username: 'second', displayName: 'Second' },
+      payload: { discordId: fakeDiscordId(), username: 'second', displayName: 'Second' },
       now: T0,
     });
 
@@ -116,7 +129,7 @@ describe('2 人になったあと', () => {
     const created = createProposal(db(), {
       type: 'member.add',
       proposedBy: idOf('kazuhiro'),
-      payload: { username: 'third', displayName: 'Third' },
+      payload: { discordId: fakeDiscordId(), username: 'third', displayName: 'Third' },
       now: T0,
     });
     expect(created.ok).toBe(true);
@@ -142,7 +155,7 @@ describe('2 人になったあと', () => {
     const created = createProposal(db(), {
       type: 'member.add',
       proposedBy: idOf('kazuhiro'),
-      payload: { username: 'third', displayName: 'Third' },
+      payload: { discordId: fakeDiscordId(), username: 'third', displayName: 'Third' },
       now: T0,
     });
     if (!created.ok) return;
@@ -163,7 +176,7 @@ describe('2 人になったあと', () => {
     const created = createProposal(db(), {
       type: 'member.add',
       proposedBy: idOf('kazuhiro'),
-      payload: { username: 'third', displayName: 'Third' },
+      payload: { discordId: fakeDiscordId(), username: 'third', displayName: 'Third' },
       now: T0,
     });
     if (!created.ok) return;
@@ -188,7 +201,7 @@ describe('2 人になったあと', () => {
     const add = createProposal(db(), {
       type: 'member.add',
       proposedBy: idOf('kazuhiro'),
-      payload: { username: 'third', displayName: 'Third' },
+      payload: { discordId: fakeDiscordId(), username: 'third', displayName: 'Third' },
       now: T0,
     });
     if (!add.ok) return;
@@ -203,7 +216,7 @@ describe('2 人になったあと', () => {
     const created = createProposal(db(), {
       type: 'member.add',
       proposedBy: idOf('kazuhiro'),
-      payload: { username: 'fourth', displayName: 'Fourth' },
+      payload: { discordId: fakeDiscordId(), username: 'fourth', displayName: 'Fourth' },
       now: T0 + 2000,
     });
     if (!created.ok) return;
@@ -221,7 +234,7 @@ describe('2 人になったあと', () => {
     const created = createProposal(db(), {
       type: 'member.add',
       proposedBy: idOf('kazuhiro'),
-      payload: { username: 'third', displayName: 'Third' },
+      payload: { discordId: fakeDiscordId(), username: 'third', displayName: 'Third' },
       now: T0,
     });
     if (!created.ok) return;
@@ -335,7 +348,7 @@ describe('除名と停止', () => {
     const p1 = createProposal(db(), {
       type: 'member.add',
       proposedBy: idOf('kazuhiro'),
-      payload: { username: 'newbie', displayName: 'Newbie' },
+      payload: { discordId: fakeDiscordId(), username: 'newbie', displayName: 'Newbie' },
       now: T0,
     });
     if (!p1.ok) return;
@@ -389,14 +402,14 @@ describe('期限切れ', () => {
     const created = createProposal(db(), {
       type: 'member.add',
       proposedBy: idOf('kazuhiro'),
-      payload: { username: 'third', displayName: 'Third' },
+      payload: { discordId: fakeDiscordId(), username: 'third', displayName: 'Third' },
       now: T0,
     });
     if (!created.ok) return;
     expect(created.view.status).toBe('open');
 
     const changed = settleExpired(db(), T0 + DEFAULT_PROPOSAL_TTL_MS + 1);
-    expect(changed).toBe(1);
+    expect(changed).toHaveLength(1);
     expect(getProposal(db(), created.view.id)?.status).toBe('expired');
   });
 });
@@ -407,7 +420,7 @@ describe('監査ログ', () => {
     const created = createProposal(db(), {
       type: 'member.add',
       proposedBy: idOf('kazuhiro'),
-      payload: { username: 'third', displayName: 'Third' },
+      payload: { discordId: fakeDiscordId(), username: 'third', displayName: 'Third' },
       now: T0,
     });
     if (created.ok) {

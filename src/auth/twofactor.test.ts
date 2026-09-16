@@ -2,7 +2,7 @@ import { Secret, TOTP } from 'otpauth';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { openTestDatabase, type Database_ } from '../db/client.js';
 import { verifyAuditLog } from '../db/audit.js';
-import { createGenesisMember } from '../domain/members.js';
+import { activateMember, createGenesisMember } from '../domain/members.js';
 import { decrypt, decryptToString, encrypt } from './crypto.js';
 import {
   RECOVERY_CODE_COUNT,
@@ -38,12 +38,15 @@ function db() {
 beforeEach(() => {
   handle = openTestDatabase();
   const result = createGenesisMember(db(), {
+    discordId: '1529717434259345489',
     username: 'kazuhiro',
     displayName: '徳本 和寛',
     now: T0,
   });
   if (!result.ok) throw new Error(result.reason);
   memberId = result.member.id;
+  // genesis は登録待ちで始まる。テストでは登録が済んだものとして扱う。
+  activateMember(db(), memberId, T0);
 });
 
 describe('保存時暗号化', () => {

@@ -1,8 +1,14 @@
-import { Client, Events, GatewayIntentBits, MessageFlags } from 'discord.js';
-import { commandsByName } from './commands/index.js';
+import { Client, Events, GatewayIntentBits } from 'discord.js';
 import type { DiscordConfig } from './env.js';
 import { logger } from './logger.js';
 
+/**
+ * Discord の bot。
+ *
+ * 送るだけで、受け取らない。提案の通知とリンクの DM がこの client から出る。
+ * 投票も設定も Web でしか行えないので、誰かが Discord に何を書いても議事は動かない。
+ * そのため interaction も message も一切購読しない。
+ */
 export function createClient(): Client {
   const client = new Client({
     intents: [GatewayIntentBits.Guilds],
@@ -10,30 +16,6 @@ export function createClient(): Client {
 
   client.once(Events.ClientReady, (ready) => {
     logger.info(`ログイン完了: ${ready.user.tag}`);
-  });
-
-  client.on(Events.InteractionCreate, (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
-
-    const command = commandsByName.get(interaction.commandName);
-    if (!command) {
-      logger.warn(`未登録のコマンドを受信: ${interaction.commandName}`);
-      return;
-    }
-
-    void command.execute(interaction).catch(async (error: unknown) => {
-      logger.error(`コマンド実行に失敗: ${interaction.commandName}`, error);
-      const body = {
-        content: 'コマンドの実行中にエラーが発生しました。',
-        flags: MessageFlags.Ephemeral,
-      } as const;
-      try {
-        if (interaction.replied || interaction.deferred) await interaction.followUp(body);
-        else await interaction.reply(body);
-      } catch (replyError: unknown) {
-        logger.error('エラー応答の送信に失敗', replyError);
-      }
-    });
   });
 
   client.on(Events.Error, (error) => {

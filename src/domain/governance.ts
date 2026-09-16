@@ -10,12 +10,7 @@ export type MemberStatus = 'pending' | 'active' | 'suspended' | 'removed';
 export type VoteChoice = 'approve' | 'reject';
 
 export type ProposalStatus =
-  | 'open'
-  | 'approved'
-  | 'rejected'
-  | 'executed'
-  | 'expired'
-  | 'cancelled';
+  'open' | 'approved' | 'rejected' | 'executed' | 'expired' | 'cancelled';
 
 export type ProposalType =
   | 'member.add'
@@ -23,7 +18,8 @@ export type ProposalType =
   | 'member.suspend'
   | 'member.reinstate'
   | 'credential.password_reset'
-  | 'credential.factor_reset';
+  | 'credential.factor_reset'
+  | 'ledger.mint';
 
 export const PROPOSAL_TYPES: readonly ProposalType[] = [
   'member.add',
@@ -32,6 +28,7 @@ export const PROPOSAL_TYPES: readonly ProposalType[] = [
   'member.reinstate',
   'credential.password_reset',
   'credential.factor_reset',
+  'ledger.mint',
 ];
 
 export function isProposalType(value: string): value is ProposalType {
@@ -46,6 +43,7 @@ export const PROPOSAL_TYPE_LABELS: Readonly<Record<ProposalType, string>> = {
   'member.reinstate': 'メンバーの復帰',
   'credential.password_reset': 'パスワードの再発行',
   'credential.factor_reset': '二要素認証の再登録',
+  'ledger.mint': 'BOAG の発行',
 };
 
 /**
@@ -57,6 +55,8 @@ const SUBJECT_EXCLUDED_TYPES: ReadonlySet<ProposalType> = new Set<ProposalType>(
   'member.suspend',
   'credential.password_reset',
   'credential.factor_reset',
+  // 自分宛の発行を自分で承認できてしまうと、合議の意味がなくなる。
+  'ledger.mint',
 ]);
 
 /** 可決すると対象者が active でなくなる提案の種類。 */
@@ -229,8 +229,7 @@ export function canVote(input: ElectorateInput, memberId: string): boolean {
 }
 
 export type ProposalRejection =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly reason: string };
+  { readonly ok: true } | { readonly ok: false; readonly reason: string };
 
 /**
  * 提案を作ってよいかを検査する。

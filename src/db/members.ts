@@ -10,8 +10,12 @@ export function getMemberByUsername(db: Db, username: string): MemberRow | undef
   return db.select().from(members).where(eq(members.username, username)).get();
 }
 
-export function getMemberByDiscordId(db: Db, discordId: string): MemberRow | undefined {
-  return db.select().from(members).where(eq(members.discordId, discordId)).get();
+/** メンバー ID は Discord のユーザー ID そのものなので、引き方は getMember と同じ。 */
+export const getMemberByDiscordId = getMember;
+
+/** Discord の snowflake として妥当な形か。 */
+export function isDiscordId(value: string): boolean {
+  return /^\d{17,20}$/.test(value);
 }
 
 /** 有権者になれるメンバー。加入前・停止中・除名済みは含まない。 */

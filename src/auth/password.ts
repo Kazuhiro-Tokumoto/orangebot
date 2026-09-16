@@ -40,7 +40,10 @@ export function checkPasswordStrength(
   context: { readonly username?: string; readonly displayName?: string } = {},
 ): PasswordCheck {
   if (password.length < MIN_PASSWORD_LENGTH) {
-    return { ok: false, reason: `パスワードは ${String(MIN_PASSWORD_LENGTH)} 文字以上にしてください` };
+    return {
+      ok: false,
+      reason: `パスワードは ${String(MIN_PASSWORD_LENGTH)} 文字以上にしてください`,
+    };
   }
   // 極端に長い入力は argon2 の計算量をそのまま攻撃者に握らせることになる。
   if (password.length > MAX_PASSWORD_LENGTH) {

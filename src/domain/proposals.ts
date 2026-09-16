@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { and, desc, eq } from 'drizzle-orm';
 import { appendAudit } from '../db/audit.js';
 import type { Db } from '../db/client.js';
-import { getMember, getMemberByUsername, listActiveMembers, setMemberStatus } from '../db/members.js';
+import {
+  getMember,
+  getMemberByUsername,
+  isDiscordId,
+  listActiveMembers,
+  setMemberStatus,
+} from '../db/members.js';
 import {
   members,
   passkeys,
@@ -25,6 +31,7 @@ import {
   type VoterSnapshot,
   type VoteChoice,
 } from './governance.js';
+import { mint, parseAmount } from './ledger.js';
 import {
   activateTicketsForProposal,
   issueTicket,
@@ -37,9 +44,18 @@ export const DEFAULT_PROPOSAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const USERNAME_PATTERN = /^[a-z0-9][a-z0-9_-]{1,38}$/;
 
 export interface MemberAddPayload {
+  /** Discord のユーザー ID。そのままメンバー ID になる。 */
+  readonly discordId: string;
   readonly username: string;
   readonly displayName: string;
-  readonly discordId: string | null;
+}
+
+export interface MintPayload {
+  /** 発行先のメンバー ID。 */
+  readonly to: string;
+  /** 10 進文字列。BigInt で扱う。 */
+  readonly amount: string;
+  readonly memo: string;
 }
 
 export interface VoteView {
@@ -168,20 +184,35 @@ export function listProposals(
 
 // --- 作成 -----------------------------------------------------------------
 
-function describe(type: ProposalType, subject: MemberRow | undefined, payload: MemberAddPayload | null): string {
+function describe(
+  type: ProposalType,
+  subject: MemberRow | undefined,
+  payload: MemberAddPayload | null,
+  mintPayload: MintPayload | null = null,
+): string {
   const label = PROPOSAL_TYPE_LABELS[type];
   if (type === 'member.add' && payload !== null) {
     return `${label}: ${payload.displayName}（${payload.username}）`;
   }
+  if (type === 'ledger.mint' && mintPayload !== null) {
+    const to = subject === undefined ? mintPayload.to : subject.displayName;
+    return `${label}: ${to} へ ${BigInt(mintPayload.amount).toLocaleString('en-US')} BOAG`;
+  }
   return subject === undefined ? label : `${label}: ${subject.displayName}（${subject.username}）`;
 }
 
-function validateMemberAddPayload(db: Db, payload: Record<string, unknown>): MemberAddPayload | Failure {
+function validateMemberAddPayload(
+  db: Db,
+  payload: Record<string, unknown>,
+): MemberAddPayload | Failure {
   const username = typeof payload['username'] === 'string' ? payload['username'].trim() : '';
-  const displayName = typeof payload['displayName'] === 'string' ? payload['displayName'].trim() : '';
-  const discordIdRaw = payload['discordId'];
-  const discordId = typeof discordIdRaw === 'string' && discordIdRaw.trim() !== '' ? discordIdRaw.trim() : null;
+  const displayName =
+    typeof payload['displayName'] === 'string' ? payload['displayName'].trim() : '';
+  const discordId = typeof payload['discordId'] === 'string' ? payload['discordId'].trim() : '';
 
+  if (!isDiscordId(discordId)) {
+    return { ok: false, reason: 'Discord のユーザー ID は 17〜20 桁の数字です' };
+  }
   if (!USERNAME_PATTERN.test(username)) {
     return {
       ok: false,
@@ -192,7 +223,10 @@ function validateMemberAddPayload(db: Db, payload: Record<string, unknown>): Mem
   if (getMemberByUsername(db, username) !== undefined) {
     return { ok: false, reason: `ユーザー名 ${username} は既に使われています` };
   }
-  return { username, displayName, discordId };
+  if (getMember(db, discordId) !== undefined) {
+    return { ok: false, reason: 'その Discord アカウントは既に登録されています' };
+  }
+  return { discordId, username, displayName };
 }
 
 export interface CreateProposalInput {
@@ -228,10 +262,27 @@ export function createProposal(db: Db, input: CreateProposalInput): CreatePropos
     if (!guard.ok) return guard;
 
     let addPayload: MemberAddPayload | null = null;
+    let mintPayload: MintPayload | null = null;
     if (input.type === 'member.add') {
       const parsed = validateMemberAddPayload(tx, input.payload ?? {});
       if ('ok' in parsed) return parsed;
       addPayload = parsed;
+    } else if (input.type === 'ledger.mint') {
+      if (subject === undefined || subject.status !== 'active') {
+        return { ok: false, reason: '発行先は有効なメンバーである必要があります' };
+      }
+      const amount = parseAmount(
+        typeof input.payload?.['amount'] === 'string' ? input.payload['amount'] : '',
+      );
+      if (amount === undefined) {
+        return { ok: false, reason: '発行額は 1 以上の整数で入力してください' };
+      }
+      const memoRaw = input.payload?.['memo'];
+      mintPayload = {
+        to: subject.id,
+        amount: amount.toString(),
+        memo: typeof memoRaw === 'string' ? memoRaw.trim().slice(0, 200) : '',
+      };
     } else if (subject === undefined) {
       return { ok: false, reason: 'この提案には対象メンバーの指定が必要です' };
     } else if (input.type === 'member.reinstate') {
@@ -251,8 +302,8 @@ export function createProposal(db: Db, input: CreateProposalInput): CreatePropos
       .values({
         id,
         type: input.type,
-        summary: describe(input.type, subject, addPayload),
-        payload: JSON.stringify(addPayload ?? input.payload ?? {}),
+        summary: describe(input.type, subject, addPayload, mintPayload),
+        payload: JSON.stringify(addPayload ?? mintPayload ?? input.payload ?? {}),
         proposedBy: input.proposedBy,
         subjectMemberId: subjectId,
         status: 'open',
@@ -297,7 +348,13 @@ export function createProposal(db: Db, input: CreateProposalInput): CreatePropos
 
 // --- 投票 -----------------------------------------------------------------
 
-function recordVote(db: Db, proposalId: string, memberId: string, choice: VoteChoice, now: number): void {
+function recordVote(
+  db: Db,
+  proposalId: string,
+  memberId: string,
+  choice: VoteChoice,
+  now: number,
+): void {
   db.insert(votes)
     .values({ proposalId, memberId, choice, votedAt: now })
     .onConflictDoUpdate({
@@ -424,11 +481,10 @@ function executeProposal(db: Db, row: ProposalRow, now: number): void {
       // 加入直後は pending。本人がパスワードと二要素を登録して初めて active になる。
       db.insert(members)
         .values({
-          id: randomUUID(),
+          id: payload.discordId,
           username: payload.username,
           displayName: payload.displayName,
           status: 'pending',
-          discordId: payload.discordId,
           createdAt: now,
         })
         .run();
@@ -460,6 +516,20 @@ function executeProposal(db: Db, row: ProposalRow, now: number): void {
     case 'credential.password_reset':
       // 券を有効化するだけ。実際の再設定は本人がリンクを開いて行う。
       return;
+
+    case 'ledger.mint': {
+      const payload = parsePayload(row.payload) as unknown as MintPayload;
+      const result = mint(db, {
+        to: payload.to,
+        amount: BigInt(payload.amount),
+        ref: row.id,
+        memo: payload.memo,
+        now,
+      });
+      // 提案の時点で額と宛先を検査しているので、ここで失敗するのは台帳が壊れている場合だけ。
+      if (!result.ok) throw new Error(`発行に失敗しました: ${result.reason}`);
+      return;
+    }
 
     case 'credential.factor_reset': {
       if (subjectId === null) return;
@@ -499,14 +569,14 @@ function voidOpenVotes(db: Db, memberId: string, now: number): void {
 
 /**
  * 期限切れの提案をまとめて片付ける。定期実行と画面表示の前に呼ぶ。
+ * 状態が変わったものだけを返すので、呼び出し側はそれを通知に回せる。
  */
-export function settleExpired(db: Db, now = Date.now()): number {
+export function settleExpired(db: Db, now = Date.now()): ProposalView[] {
   const open = db.select().from(proposals).where(eq(proposals.status, 'open')).all();
-  let changed = 0;
+  const changed: ProposalView[] = [];
   for (const row of open) {
-    const before = row.status;
-    const after = settle(db, row.id, now).status;
-    if (before !== after) changed += 1;
+    const view = settle(db, row.id, now);
+    if (view.status !== row.status) changed.push(view);
   }
   return changed;
 }

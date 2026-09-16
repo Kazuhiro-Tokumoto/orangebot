@@ -8,12 +8,13 @@
 export const MIGRATIONS: readonly string[] = [
   `
   CREATE TABLE members (
+    -- Discord のユーザー ID をそのまま主キーにする。
+    -- snowflake は 64 ビット整数で JavaScript の数値では表しきれないため文字列で持つ。
     id            TEXT PRIMARY KEY,
     username      TEXT NOT NULL UNIQUE,
     display_name  TEXT NOT NULL,
     -- pending: 招待は通ったがまだ本人の登録が済んでいない。有権者には数えない。
     status        TEXT NOT NULL CHECK (status IN ('pending', 'active', 'suspended', 'removed')),
-    discord_id    TEXT UNIQUE,
     created_at    INTEGER NOT NULL,
     activated_at  INTEGER
   );
@@ -139,6 +140,45 @@ export const MIGRATIONS: readonly string[] = [
     detail           TEXT NOT NULL DEFAULT '{}',
     prev_hash        TEXT NOT NULL,
     hash             TEXT NOT NULL
+  );
+  `,
+
+  // --- 2: BOAG の内部台帳 ---
+  `
+  -- 複式。ひとつの動きは tx_id でまとめられた複数行からなり、その合計は必ず 0 になる。
+  -- 発行は特別口座 '@supply' から出て誰かに入る形で表す。
+  -- こうしておくと「全行の合計が 0 か」を見るだけで、無から増えていないことを確かめられる。
+  CREATE TABLE ledger_entries (
+    id          TEXT PRIMARY KEY,
+    tx_id       TEXT NOT NULL,
+    account_id  TEXT NOT NULL,
+    -- 符号付きの整数を 10 進文字列で持つ。JavaScript の数値では桁が足りないため。
+    amount      TEXT NOT NULL,
+    kind        TEXT NOT NULL CHECK (kind IN ('mint', 'transfer', 'burn', 'exchange')),
+    -- 由来。発行なら提案 ID、交換なら外部サービスの取引 ID。
+    ref         TEXT,
+    memo        TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL
+  );
+  CREATE INDEX ledger_account_idx ON ledger_entries (account_id);
+  CREATE INDEX ledger_tx_idx ON ledger_entries (tx_id);
+  `,
+
+  // --- 3: OAG のウォレット ---
+  `
+  -- 組織にひとつのウォレット。控えはパスフレーズで封じた塊のまま置く。
+  -- 口座の拡張公開鍵だけは平文で持つ。住所を作るのに秘密は要らないので、
+  -- 残高を見るだけならパスフレーズを誰にも聞かずに済む。
+  CREATE TABLE wallets (
+    id            TEXT PRIMARY KEY,
+    network       TEXT NOT NULL CHECK (network IN ('mainnet', 'testnet', 'regtest')),
+    account       INTEGER NOT NULL DEFAULT 0,
+    xpub          TEXT NOT NULL,
+    vault         BLOB NOT NULL,
+    -- 次に配る受取住所の番号。配った分を覚えておかないと同じ住所を配ってしまう。
+    next_receive  INTEGER NOT NULL DEFAULT 0,
+    created_at    INTEGER NOT NULL,
+    created_by    TEXT REFERENCES members(id) ON DELETE SET NULL
   );
   `,
 ];

@@ -3,11 +3,16 @@ import { EnvError, loadEnv, loadEnvWithWarnings } from './env.js';
 
 const KEY = Buffer.alloc(32, 7).toString('base64');
 
+const CERT = '/etc/letsencrypt/live/mail.shudo-physics.com/fullchain.pem';
+const PRIVKEY = '/etc/letsencrypt/live/mail.shudo-physics.com/privkey.pem';
+
 const PROD = {
   NODE_ENV: 'production',
   SESSION_SECRET: 'session-secret',
   APP_ENCRYPTION_KEY: KEY,
   WEB_ORIGIN: 'https://orangebot.example.com',
+  TLS_CERT_PATH: CERT,
+  TLS_KEY_PATH: PRIVKEY,
 } satisfies NodeJS.ProcessEnv;
 
 describe('開発環境', () => {
@@ -53,13 +58,43 @@ describe('本番環境', () => {
   });
 
   it('http の origin はパスキーが動かないので拒否する', () => {
-    expect(() => loadEnv({ ...PROD, WEB_ORIGIN: 'http://orangebot.example.com' })).toThrow(
-      /https/,
-    );
+    expect(() => loadEnv({ ...PROD, WEB_ORIGIN: 'http://orangebot.example.com' })).toThrow(/https/);
   });
 
   it('長さの足りない暗号鍵を拒否する', () => {
     expect(() => loadEnv({ ...PROD, APP_ENCRYPTION_KEY: 'c2hvcnQ=' })).toThrow(/32 バイト/);
+  });
+});
+
+describe('TLS', () => {
+  it('証明書の場所を読み取る', () => {
+    expect(loadEnv(PROD).tls).toEqual({ certPath: CERT, keyPath: PRIVKEY });
+  });
+
+  it('証明書があれば既定のポートは 443', () => {
+    expect(loadEnv(PROD).port).toBe(443);
+    expect(loadEnv({ ...PROD, PORT: '8443' }).port).toBe(8443);
+  });
+
+  it('本番で証明書の指定が無ければ起動を止める', () => {
+    const { TLS_CERT_PATH: _cert, TLS_KEY_PATH: _key, ...rest } = PROD;
+    expect(() => loadEnv(rest)).toThrow(/TLS_CERT_PATH/);
+  });
+
+  it('片方だけの指定は設定漏れとして弾く', () => {
+    const { TLS_KEY_PATH: _key, ...rest } = PROD;
+    expect(() => loadEnv(rest)).toThrow(EnvError);
+  });
+
+  it('開発では証明書が無くても http のまま動く', () => {
+    const env = loadEnv({});
+    expect(env.tls).toBeUndefined();
+    expect(env.webOrigin).toBe('http://localhost:3000');
+  });
+
+  it('開発でも証明書を指定すれば既定の origin が https になる', () => {
+    const env = loadEnv({ TLS_CERT_PATH: CERT, TLS_KEY_PATH: PRIVKEY, PORT: '8443' });
+    expect(env.webOrigin).toBe('https://localhost:8443');
   });
 });
 

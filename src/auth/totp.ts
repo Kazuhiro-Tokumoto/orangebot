@@ -97,11 +97,7 @@ export interface StoredTotp {
 }
 
 export function loadSecret(db: Db, memberId: string, key: Buffer): StoredTotp | undefined {
-  const row = db
-    .select()
-    .from(totpCredentials)
-    .where(eq(totpCredentials.memberId, memberId))
-    .get();
+  const row = db.select().from(totpCredentials).where(eq(totpCredentials.memberId, memberId)).get();
   if (row === undefined) return undefined;
 
   try {
@@ -145,11 +141,7 @@ export function confirmSecret(
 }
 
 export function hasConfirmedTotp(db: Db, memberId: string): boolean {
-  const row = db
-    .select()
-    .from(totpCredentials)
-    .where(eq(totpCredentials.memberId, memberId))
-    .get();
+  const row = db.select().from(totpCredentials).where(eq(totpCredentials.memberId, memberId)).get();
   return row !== undefined && row.confirmedAt !== null;
 }
 
