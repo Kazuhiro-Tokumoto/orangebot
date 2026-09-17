@@ -156,3 +156,89 @@ describe('その他', () => {
     expect(loadEnv({ DATABASE_PATH: '/tmp/x.db' }).databasePath).toBe('/tmp/x.db');
   });
 });
+
+describe('値動きの予想', () => {
+  it('既定で BTC と ETH を受け付ける', () => {
+    expect(loadEnv({}).prediction).toEqual({
+      symbols: ['BTCUSDT', 'ETHUSDT'],
+      rankingSymbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'],
+      priceBaseUrl: 'https://data-api.binance.vision',
+    });
+  });
+
+  it('順位予想の銘柄は 2 つ以上のときだけ使う', () => {
+    expect(loadEnv({ RANKING_SYMBOLS: 'btcusdt,ethusdt' }).prediction?.rankingSymbols).toEqual([
+      'BTCUSDT',
+      'ETHUSDT',
+    ]);
+    expect(loadEnv({ RANKING_SYMBOLS: 'BTCUSDT' }).prediction?.rankingSymbols).toEqual([]);
+    expect(loadEnv({ RANKING_SYMBOLS: 'none' }).prediction?.rankingSymbols).toEqual([]);
+    expect(() => loadEnv({ RANKING_SYMBOLS: 'BTC-USDT,ETHUSDT' })).toThrow(EnvError);
+  });
+
+  it('none で止められる', () => {
+    expect(loadEnv({ PREDICTION_SYMBOLS: 'none' }).prediction).toBeUndefined();
+  });
+
+  it('銘柄を並べて指定でき、小文字と重複は整える', () => {
+    expect(loadEnv({ PREDICTION_SYMBOLS: 'solusdt, BTCUSDT,BTCUSDT' }).prediction?.symbols).toEqual([
+      'SOLUSDT',
+      'BTCUSDT',
+    ]);
+  });
+
+  it('不正なシンボルは弾く', () => {
+    expect(() => loadEnv({ PREDICTION_SYMBOLS: 'BTC/USDT' })).toThrow(EnvError);
+  });
+});
+
+describe('pt の交換', () => {
+  const SECRET = 'x'.repeat(32);
+
+  it('秘密が無ければ止まっている', () => {
+    expect(loadEnv({}).exchange).toBeUndefined();
+  });
+
+  it('秘密だけなら入金だけ動き、上限は既定値', () => {
+    expect(loadEnv({ EXCHANGE_SECRET: SECRET }).exchange).toEqual({
+      secret: SECRET,
+      partnerUrl: undefined,
+      limits: { maxPtPerRequest: 100_000_000_000n, maxPtPerDay: 1_000_000_000_000n },
+    });
+  });
+
+  it('短い秘密は弾く', () => {
+    expect(() => loadEnv({ EXCHANGE_SECRET: 'short' })).toThrow(/32 文字/);
+  });
+
+  it('秘密なしに相手の URL だけ置くのは設定漏れ', () => {
+    expect(() => loadEnv({ EXCHANGE_PARTNER_URL: 'https://example.com/in' })).toThrow(EnvError);
+  });
+
+  it('本番では相手の URL も https に限る', () => {
+    expect(() =>
+      loadEnv({ ...PROD, EXCHANGE_SECRET: SECRET, EXCHANGE_PARTNER_URL: 'http://example.com/in' }),
+    ).toThrow(/https/);
+  });
+
+  it('相手の URL はパスまで要る', () => {
+    expect(() =>
+      loadEnv({ EXCHANGE_SECRET: SECRET, EXCHANGE_PARTNER_URL: 'https://oogiri-bot-cfy1.onrender.com/' }),
+    ).toThrow(/パスまで/);
+    expect(
+      loadEnv({
+        EXCHANGE_SECRET: SECRET,
+        EXCHANGE_PARTNER_URL: 'https://oogiri-bot-cfy1.onrender.com/api/orangebot-boag-pt-exchange/v1/pt-deposits',
+      }).exchange?.partnerUrl,
+    ).toBe('https://oogiri-bot-cfy1.onrender.com/api/orangebot-boag-pt-exchange/v1/pt-deposits');
+  });
+
+  it('上限を変えられる', () => {
+    const env = loadEnv({
+      EXCHANGE_SECRET: SECRET,
+      EXCHANGE_MAX_PT_PER_REQUEST: '5',
+      EXCHANGE_MAX_PT_PER_DAY: '50',
+    });
+    expect(env.exchange?.limits).toEqual({ maxPtPerRequest: 5n, maxPtPerDay: 50n });
+  });
+});

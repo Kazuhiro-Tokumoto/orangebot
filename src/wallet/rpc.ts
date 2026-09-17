@@ -58,6 +58,8 @@ export interface Utxo {
   readonly address: string;
   readonly amount: bigint;
   readonly height: number | undefined;
+  /** コインベースの出力か。成熟するまで使えない。 */
+  readonly coinbase: boolean;
 }
 
 export interface ScanResult {
@@ -76,6 +78,8 @@ export interface RpcClient {
   getBlockCount(): Promise<number>;
   scanUtxos(addresses: readonly string[]): Promise<ScanResult>;
   sendRawTransaction(hex: string): Promise<string>;
+  /** mempool にある取引の txid。 */
+  getMempool(): Promise<string[]>;
 }
 
 export interface RpcOptions {
@@ -138,6 +142,7 @@ function parseUtxo(value: unknown): Utxo {
     address,
     amount: parseAtomic(row['amount'] ?? row['value'], 'UTXO の金額'),
     height: pickNumber(row, ['height', 'block_height']),
+    coinbase: row['coinbase'] === true,
   };
 }
 
@@ -199,20 +204,22 @@ export function createRpcClient(config: OagConfig, options: RpcOptions = {}): Rp
     if (response.status === 401 || response.status === 403) {
       throw new RpcError('合言葉が合いません。ノードを再起動した直後かもしれません');
     }
-    if (!response.ok) {
-      throw new RpcError(`ノードが ${String(response.status)} を返しました`);
-    }
 
+    // JSON-RPC の誤りは HTTP の状態に関わらず本文に入る。先に本文を見ないと、
+    // 「ノードが断った」と「届いたか分からない」を取り違える。
     const body: unknown = await response.json().catch(() => undefined);
-    const envelope = asRecord(body, 'ノードの応答');
-
-    const failure = envelope['error'];
+    const failure =
+      typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['error'] : undefined;
     if (failure !== null && failure !== undefined) {
       const detail = asRecord(failure, 'ノードの誤り');
       const message = pickString(detail, ['message']) ?? JSON.stringify(failure);
       throw new RpcError(`${method}: ${message}`, pickNumber(detail, ['code']));
     }
+    if (!response.ok) {
+      throw new RpcError(`ノードが ${String(response.status)} を返しました`);
+    }
 
+    const envelope = asRecord(body, 'ノードの応答');
     return envelope['result'] as T;
   }
 
@@ -237,6 +244,14 @@ export function createRpcClient(config: OagConfig, options: RpcOptions = {}): Rp
     async sendRawTransaction(hex) {
       const value = await call<unknown>('sendrawtransaction', [hex]);
       if (typeof value !== 'string') throw new RpcError('sendrawtransaction が txid を返しません');
+      return value;
+    },
+
+    async getMempool() {
+      const value = await call<unknown>('getmempool');
+      if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {
+        throw new RpcError('getmempool が txid の一覧を返しません');
+      }
       return value;
     },
   };

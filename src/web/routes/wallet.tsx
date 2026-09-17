@@ -1,8 +1,11 @@
 import { Hono, type Context } from 'hono';
-import type { WalletRow } from '../../db/schema.js';
+import type { OagSendRow, WalletRow } from '../../db/schema.js';
+import { createProposal, listProposals, type ProposalView } from '../../domain/proposals.js';
+import { formatUnits } from '../../domain/units.js';
 import { formatOag } from '../../wallet/amount.js';
 import { readWalletStatus, type WalletStatus } from '../../wallet/balance.js';
 import { CHANGE_RECEIVE, GAP_LIMIT, MAINNET_COIN_TYPE_PENDING } from '../../wallet/seed.js';
+import { executeSend, getSendForProposal, listSends } from '../../wallet/send.js';
 import { addressesOf, createWallet, getWallet, issueReceiveAddress } from '../../wallet/store.js';
 import { field, requireFullSession, type AppBindings, type RouteDeps } from '../context.js';
 import { Field, Notice, SecretBox, Submit } from '../views/forms.js';
@@ -122,14 +125,91 @@ function StatusBanner({ status }: { status: WalletStatus }) {
   return <Notice tone="warn">ノードに繋がりません。{status.error ?? ''}</Notice>;
 }
 
+interface ApprovedSend {
+  readonly proposal: ProposalView;
+  readonly send: OagSendRow | undefined;
+}
+
+const SEND_LABEL: Readonly<Record<OagSendRow['status'], string>> = {
+  signed: '署名済み',
+  broadcast: '送信済み',
+  unknown: '届いたか不明',
+  failed: 'ノードが拒否',
+};
+
+const SEND_TONE: Readonly<Record<OagSendRow['status'], string>> = {
+  signed: 'warn',
+  broadcast: 'ok',
+  unknown: 'warn',
+  failed: 'bad',
+};
+
+/** 可決した送金 1 件。まだ送り終えていなければパスフレーズの欄を出す。 */
+function ApprovedSendCard({ item }: { item: ApprovedSend }) {
+  const payload = item.proposal.payload;
+  const to = typeof payload['to'] === 'string' ? payload['to'] : '';
+  const amount = typeof payload['amount'] === 'string' ? BigInt(payload['amount']) : 0n;
+  const memo = typeof payload['memo'] === 'string' ? payload['memo'] : '';
+  const rebuild = item.send === undefined || item.send.status === 'failed';
+
+  return (
+    <section class="panel">
+      <div class="row" style="justify-content:space-between">
+        <strong>{formatUnits(amount)} OAG</strong>
+        {item.send === undefined ? (
+          <span class="tag accent">未送信</span>
+        ) : (
+          <span class={`tag ${SEND_TONE[item.send.status]}`}>{SEND_LABEL[item.send.status]}</span>
+        )}
+      </div>
+      <p class="field-hint" style="margin:6px 0 12px">
+        宛先 <span class="mono">{to}</span>
+        {memo === '' ? null : ` ・ ${memo}`}
+      </p>
+
+      {item.send === undefined ? null : (
+        <p class="field-hint mono" style="margin:0 0 12px">
+          txid {item.send.txid} ・ 手数料 {formatUnits(BigInt(item.send.fee))} OAG
+          {item.send.error === null ? null : (
+            <>
+              <br />
+              <span class="bad-text">{item.send.error}</span>
+            </>
+          )}
+        </p>
+      )}
+
+      <form class="row" method="post" action={`/wallet/send/${item.proposal.id}`}>
+        <input
+          class="input"
+          name="passphrase"
+          type="password"
+          required
+          autocomplete="off"
+          placeholder="ウォレットのパスフレーズ"
+          style="max-width:18em"
+        />
+        <button class="btn" type="submit">
+          {rebuild ? '署名して送る' : '同じ取引を送り直す'}
+        </button>
+      </form>
+    </section>
+  );
+}
+
 function WalletPage(props: {
   readonly viewer: string;
   readonly wallet: WalletRow;
   readonly status: WalletStatus;
   readonly addresses: readonly { readonly index: number; readonly address: string }[];
+  readonly approved: readonly ApprovedSend[];
+  readonly history: readonly OagSendRow[];
   readonly notice?: string | undefined;
   readonly error?: string | undefined;
 }) {
+  const prefix =
+    props.wallet.network === 'mainnet' ? 'oag' : props.wallet.network === 'testnet' ? 'toag' : 'roag';
+
   return (
     <Layout title="ウォレット" viewer={props.viewer}>
       <h1>ウォレット</h1>
@@ -189,12 +269,66 @@ function WalletPage(props: {
         )}
       </section>
 
-      <h2>送金</h2>
+      <h2>送金を提案する</h2>
       <section class="panel">
-        <span class="muted">
-          まだできません。取引の組み立てと署名がこれからです。
-          送るときはパスフレーズを求めます。
-        </span>
+        <p class="field-hint" style="margin:0 0 14px">
+          組織の資金なので、送金も過半数の承認を経ます。可決したら、パスフレーズを知っている
+          メンバーが下の一覧から送ります。手数料はノードの最低料率で、送るときに決まります。
+        </p>
+        <form class="stack" method="post" action="/wallet/propose">
+          <Field label="宛先の住所" name="to" required placeholder={`${prefix}1...`} />
+          <Field
+            label="送る額 (OAG)"
+            name="amount"
+            required
+            inputmode="decimal"
+            placeholder="1.5"
+            hint="0.0015 以上。小数は 16 桁まで。"
+          />
+          <Field label="理由" name="memo" hint="提案の一覧と監査ログに残ります。" />
+          <Submit>この内容で提案する</Submit>
+        </form>
+      </section>
+
+      <h2>可決した送金</h2>
+      {props.approved.length === 0 ? (
+        <section class="panel">
+          <span class="muted">送るのを待っているものはありません。</span>
+        </section>
+      ) : (
+        props.approved.map((item) => <ApprovedSendCard item={item} />)
+      )}
+
+      <h2>送金の履歴</h2>
+      <section class="panel">
+        {props.history.length === 0 ? (
+          <span class="muted">まだ送っていません。</span>
+        ) : (
+          <div class="scroll">
+            <table>
+              <tr>
+                <th>日時</th>
+                <th>宛先</th>
+                <th>額</th>
+                <th>手数料</th>
+                <th>状態</th>
+                <th>txid</th>
+              </tr>
+              {props.history.map((row) => (
+                <tr>
+                  <td>{when(row.createdAt)}</td>
+                  <td class="mono">{row.toAddress}</td>
+                  <td class="mono">{formatUnits(BigInt(row.amount))}</td>
+                  <td class="mono">{formatUnits(BigInt(row.fee))}</td>
+                  <td>
+                    <span class={`tag ${SEND_TONE[row.status]}`}>{SEND_LABEL[row.status]}</span>
+                  </td>
+                  <td class="mono muted">{row.txid}</td>
+                </tr>
+              ))}
+            </table>
+          </div>
+        )}
       </section>
 
       <h2>控え</h2>
@@ -239,12 +373,20 @@ export function walletRoutes(deps: RouteDeps) {
       count: wallet.nextReceive,
     }).slice(-20);
 
+    // 可決した送金のうち、まだ送り終えていないもの。送り終えたものは履歴に出る。
+    const approved = listProposals(deps.db, { status: 'executed' })
+      .filter((proposal) => proposal.type === 'wallet.send')
+      .map((proposal) => ({ proposal, send: getSendForProposal(deps.db, proposal.id) }))
+      .filter((item) => item.send?.status !== 'broadcast');
+
     return c.html(
       <WalletPage
         viewer={viewer.member.displayName}
         wallet={wallet}
         status={await readWalletStatus(deps.db, deps.rpc)}
         addresses={addresses.reverse()}
+        approved={approved}
+        history={listSends(deps.db)}
         notice={notice}
         error={error}
       />,
@@ -282,6 +424,55 @@ export function walletRoutes(deps: RouteDeps) {
     if ('ok' in issued) return render(c, undefined, issued.reason);
 
     return render(c, `新しい受取住所を出しました: ${issued.address}`);
+  });
+
+  app.post('/wallet/propose', async (c) => {
+    const viewer = c.get('viewer');
+    if (viewer === undefined) return c.redirect('/login');
+
+    const form = await c.req.formData();
+    const result = createProposal(deps.db, {
+      type: 'wallet.send',
+      proposedBy: viewer.member.id,
+      payload: {
+        to: field(form, 'to'),
+        amount: field(form, 'amount'),
+        memo: field(form, 'memo'),
+      },
+    });
+    if (!result.ok) return render(c, undefined, result.reason);
+
+    deps.notify.announce(result.view, viewer.member.displayName);
+    return render(
+      c,
+      result.view.status === 'executed'
+        ? '可決しました。下の一覧からパスフレーズを入れて送ってください。'
+        : '送金を提案しました。過半数の承認が集まると送れるようになります。',
+    );
+  });
+
+  /**
+   * 署名して送る。
+   * パスフレーズの確認と鍵の導出で 1 秒ほどかかる。二度押しされても、
+   * 同じ提案からは同じ取引しか出ない (wallet/send.ts)。
+   */
+  app.post('/wallet/send/:proposalId', async (c) => {
+    const viewer = c.get('viewer');
+    if (viewer === undefined) return c.redirect('/login');
+
+    const form = await c.req.formData();
+    const result = await executeSend(deps.db, deps.rpc, {
+      proposalId: c.req.param('proposalId'),
+      passphrase: field(form, 'passphrase'),
+      actorMemberId: viewer.member.id,
+    });
+    if (!result.ok) return render(c, undefined, result.reason);
+
+    return render(
+      c,
+      `${result.rebroadcast ? '送り直しました' : '送りました'}。txid ${result.send.txid}。` +
+        '受け取る側には、承認が 10 回付くまで確定として扱わないよう伝えてください。',
+    );
   });
 
   return app;

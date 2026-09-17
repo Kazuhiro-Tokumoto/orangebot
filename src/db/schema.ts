@@ -187,6 +187,7 @@ export const wallets = sqliteTable('wallets', {
   /** パスフレーズで封じた控え。中身は wallet/vault.ts の形式。 */
   vault: blob('vault', { mode: 'buffer' }).notNull(),
   nextReceive: integer('next_receive').notNull().default(0),
+  nextChange: integer('next_change').notNull().default(0),
   createdAt: integer('created_at').notNull(),
   createdBy: text('created_by').references(() => members.id, { onDelete: 'set null' }),
 });
@@ -208,3 +209,144 @@ export const posts = sqliteTable('posts', {
 });
 
 export type PostRow = typeof posts.$inferSelect;
+
+export const oagSends = sqliteTable('oag_sends', {
+  id: text('id').primaryKey(),
+  proposalId: text('proposal_id').notNull().unique(),
+  status: text('status', { enum: ['signed', 'broadcast', 'unknown', 'failed'] }).notNull(),
+  txid: text('txid').notNull(),
+  rawHex: text('raw_hex').notNull(),
+  /** 使った出力 'txid:index' の JSON 配列。 */
+  inputs: text('inputs').notNull(),
+  toAddress: text('to_address').notNull(),
+  /** atomic の 10 進文字列。 */
+  amount: text('amount').notNull(),
+  fee: text('fee').notNull(),
+  change: text('change').notNull(),
+  createdBy: text('created_by'),
+  createdAt: integer('created_at').notNull(),
+  broadcastAt: integer('broadcast_at'),
+  error: text('error'),
+});
+
+export type OagSendRow = typeof oagSends.$inferSelect;
+
+export const predictionRounds = sqliteTable('prediction_rounds', {
+  /** '<シンボル>:<開始時刻>'。 */
+  id: text('id').primaryKey(),
+  symbol: text('symbol').notNull(),
+  startsAt: integer('starts_at').notNull(),
+  endsAt: integer('ends_at').notNull(),
+  status: text('status', { enum: ['open', 'settled', 'refunded'] }).notNull(),
+  openPrice: text('open_price'),
+  closePrice: text('close_price'),
+  outcome: text('outcome', { enum: ['up', 'down', 'flat'] }),
+  settledAt: integer('settled_at'),
+});
+
+export type PredictionRoundRow = typeof predictionRounds.$inferSelect;
+
+export const predictionBets = sqliteTable('prediction_bets', {
+  id: text('id').primaryKey(),
+  roundId: text('round_id').notNull(),
+  memberId: text('member_id').notNull(),
+  side: text('side', { enum: ['up', 'down'] }).notNull(),
+  /** SOAG の 10 進文字列。 */
+  stake: text('stake').notNull(),
+  /** 決着後に払い戻した額。外れなら '0'。未決着なら null。 */
+  payout: text('payout'),
+  placedAt: integer('placed_at').notNull(),
+});
+
+export type PredictionBetRow = typeof predictionBets.$inferSelect;
+
+export const exchangeDeposits = sqliteTable('exchange_deposits', {
+  /** 相手が決めた取引の番号。 */
+  id: text('id').primaryKey(),
+  memberId: text('member_id').notNull(),
+  /** pt の 10 進文字列。 */
+  pt: text('pt').notNull(),
+  /** 付けた SOAG の 10 進文字列。 */
+  soag: text('soag').notNull(),
+  bodyHash: text('body_hash').notNull(),
+  ledgerTx: text('ledger_tx').notNull(),
+  createdAt: integer('created_at').notNull(),
+});
+
+export type ExchangeDepositRow = typeof exchangeDeposits.$inferSelect;
+
+export const exchangeWithdrawals = sqliteTable('exchange_withdrawals', {
+  id: text('id').primaryKey(),
+  memberId: text('member_id').notNull(),
+  pt: text('pt').notNull(),
+  soag: text('soag').notNull(),
+  status: text('status', { enum: ['pending', 'delivered', 'refunded', 'stuck'] }).notNull(),
+  attempts: integer('attempts').notNull().default(0),
+  nextAttemptAt: integer('next_attempt_at').notNull(),
+  lastError: text('last_error'),
+  lastStatus: integer('last_status'),
+  createdAt: integer('created_at').notNull(),
+  settledAt: integer('settled_at'),
+});
+
+export type ExchangeWithdrawalRow = typeof exchangeWithdrawals.$inferSelect;
+
+export const gameRounds = sqliteTable('game_rounds', {
+  /** '<game>:<開始時刻>' または '<game>:<銘柄>:<開始時刻>'。 */
+  id: text('id').primaryKey(),
+  game: text('game', { enum: ['closest', 'ranking', 'volatility'] }).notNull(),
+  /** closest と volatility は銘柄、ranking は比べる銘柄をカンマで並べたもの。 */
+  subject: text('subject').notNull(),
+  startsAt: integer('starts_at').notNull(),
+  endsAt: integer('ends_at').notNull(),
+  status: text('status', { enum: ['open', 'settled', 'refunded'] }).notNull(),
+  /** 決着の中身の JSON。 */
+  result: text('result'),
+  settledAt: integer('settled_at'),
+});
+
+export type GameRoundRow = typeof gameRounds.$inferSelect;
+
+export const gameEntries = sqliteTable('game_entries', {
+  id: text('id').primaryKey(),
+  roundId: text('round_id').notNull(),
+  memberId: text('member_id').notNull(),
+  /** closest は予想した値段、ranking は銘柄、volatility は値幅の帯。 */
+  pick: text('pick').notNull(),
+  /** SOAG の 10 進文字列。 */
+  stake: text('stake').notNull(),
+  payout: text('payout'),
+  placedAt: integer('placed_at').notNull(),
+});
+
+export type GameEntryRow = typeof gameEntries.$inferSelect;
+
+export const markets = sqliteTable('markets', {
+  id: text('id').primaryKey(),
+  proposalId: text('proposal_id').notNull().unique(),
+  question: text('question').notNull(),
+  /** 何をもって「はい」とするか。判定の投票で見る。 */
+  criteria: text('criteria').notNull(),
+  closesAt: integer('closes_at').notNull(),
+  status: text('status', { enum: ['open', 'resolved', 'refunded'] }).notNull(),
+  outcome: text('outcome', { enum: ['yes', 'no'] }),
+  createdBy: text('created_by'),
+  createdAt: integer('created_at').notNull(),
+  resolvedAt: integer('resolved_at'),
+  resolvedByProposal: text('resolved_by_proposal'),
+});
+
+export type MarketRow = typeof markets.$inferSelect;
+
+export const marketBets = sqliteTable('market_bets', {
+  id: text('id').primaryKey(),
+  marketId: text('market_id').notNull(),
+  memberId: text('member_id').notNull(),
+  side: text('side', { enum: ['yes', 'no'] }).notNull(),
+  /** SOAG の 10 進文字列。 */
+  stake: text('stake').notNull(),
+  payout: text('payout'),
+  placedAt: integer('placed_at').notNull(),
+});
+
+export type MarketBetRow = typeof marketBets.$inferSelect;

@@ -19,7 +19,10 @@ export type ProposalType =
   | 'member.reinstate'
   | 'credential.password_reset'
   | 'credential.factor_reset'
-  | 'ledger.mint';
+  | 'ledger.mint'
+  | 'wallet.send'
+  | 'market.open'
+  | 'market.resolve';
 
 export const PROPOSAL_TYPES: readonly ProposalType[] = [
   'member.add',
@@ -29,6 +32,9 @@ export const PROPOSAL_TYPES: readonly ProposalType[] = [
   'credential.password_reset',
   'credential.factor_reset',
   'ledger.mint',
+  'wallet.send',
+  'market.open',
+  'market.resolve',
 ];
 
 export function isProposalType(value: string): value is ProposalType {
@@ -44,6 +50,9 @@ export const PROPOSAL_TYPE_LABELS: Readonly<Record<ProposalType, string>> = {
   'credential.password_reset': 'パスワードの再発行',
   'credential.factor_reset': '二要素認証の再登録',
   'ledger.mint': 'BOAG の発行',
+  'wallet.send': 'OAG の送金',
+  'market.open': 'みんなで予想の問い',
+  'market.resolve': 'みんなで予想の判定',
 };
 
 /**

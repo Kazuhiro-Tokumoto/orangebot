@@ -201,4 +201,160 @@ export const MIGRATIONS: readonly string[] = [
   -- 投げ銭は台帳の ref に 'post:<id>' を入れて辿る。
   CREATE INDEX ledger_ref_idx ON ledger_entries (ref);
   `,
+
+  // --- 5: OAG の送金 ---
+  `
+  -- お釣りの住所も使い回さない。配った番号を覚えておく。
+  ALTER TABLE wallets ADD COLUMN next_change INTEGER NOT NULL DEFAULT 0;
+
+  -- 承認された送金の提案 1 件につき、署名した取引は 1 つだけ。
+  -- 送る前に署名済みの取引をここへ書く。送った直後に落ちても、何を送ったかが残る。
+  -- 送り直すときは同じバイト列を投げる。作り直すと別の取引が生まれ、二重に払いうるため。
+  CREATE TABLE oag_sends (
+    id            TEXT PRIMARY KEY,
+    proposal_id   TEXT NOT NULL UNIQUE REFERENCES proposals(id),
+    status        TEXT NOT NULL CHECK (status IN ('signed', 'broadcast', 'unknown', 'failed')),
+    txid          TEXT NOT NULL,
+    raw_hex       TEXT NOT NULL,
+    -- 使った出力 'txid:index' の JSON 配列。承認待ちの間は次の送金で使わない。
+    inputs        TEXT NOT NULL,
+    to_address    TEXT NOT NULL,
+    amount        TEXT NOT NULL,
+    fee           TEXT NOT NULL,
+    change        TEXT NOT NULL,
+    created_by    TEXT REFERENCES members(id) ON DELETE SET NULL,
+    created_at    INTEGER NOT NULL,
+    broadcast_at  INTEGER,
+    error         TEXT
+  );
+  `,
+
+  // --- 6: 5 分ごとの値動きの予想 ---
+  `
+  -- 回はシンボルと開始時刻で決まる。開始時刻は 5 分の倍数で、取引所の 5 分足と揃える。
+  -- 賭けが 1 つも無い回は行を作らない。
+  CREATE TABLE prediction_rounds (
+    id            TEXT PRIMARY KEY,
+    symbol        TEXT NOT NULL,
+    starts_at     INTEGER NOT NULL,
+    ends_at       INTEGER NOT NULL,
+    status        TEXT NOT NULL CHECK (status IN ('open', 'settled', 'refunded')),
+    open_price    TEXT,
+    close_price   TEXT,
+    outcome       TEXT CHECK (outcome IN ('up', 'down', 'flat')),
+    settled_at    INTEGER,
+    UNIQUE (symbol, starts_at)
+  );
+  CREATE INDEX prediction_rounds_status_idx ON prediction_rounds (status, ends_at);
+
+  -- 賭け金は台帳の特別口座 '@prediction' に預ける。決着したらそこから払い戻す。
+  -- 金額は SOAG の 10 進文字列。
+  CREATE TABLE prediction_bets (
+    id          TEXT PRIMARY KEY,
+    round_id    TEXT NOT NULL REFERENCES prediction_rounds(id),
+    member_id   TEXT NOT NULL REFERENCES members(id),
+    side        TEXT NOT NULL CHECK (side IN ('up', 'down')),
+    stake       TEXT NOT NULL,
+    payout      TEXT,
+    placed_at   INTEGER NOT NULL
+  );
+  CREATE INDEX prediction_bets_round_idx ON prediction_bets (round_id);
+  CREATE INDEX prediction_bets_member_idx ON prediction_bets (member_id, placed_at);
+  `,
+
+  // --- 7: 外部の bot との pt の交換 ---
+  `
+  -- 相手から届いた入金。id は相手が決めた取引の番号で、同じ番号の二度目は同じ結果を返す。
+  -- body_hash で中身を覚えておき、同じ番号で中身が違えば断る。
+  CREATE TABLE exchange_deposits (
+    id          TEXT PRIMARY KEY,
+    member_id   TEXT NOT NULL REFERENCES members(id),
+    pt          TEXT NOT NULL,
+    soag        TEXT NOT NULL,
+    body_hash   TEXT NOT NULL,
+    ledger_tx   TEXT NOT NULL,
+    created_at  INTEGER NOT NULL
+  );
+  CREATE INDEX exchange_deposits_created_idx ON exchange_deposits (created_at);
+
+  -- 相手へ送る出金。台帳から先に引いてから、届くまで何度でも送る (outbox)。
+  -- 相手がはっきり断ったときだけ返金する。届いたか分からないうちは返金しない。
+  CREATE TABLE exchange_withdrawals (
+    id               TEXT PRIMARY KEY,
+    member_id        TEXT NOT NULL REFERENCES members(id),
+    pt               TEXT NOT NULL,
+    soag             TEXT NOT NULL,
+    status           TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'refunded', 'stuck')),
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at  INTEGER NOT NULL,
+    last_error       TEXT,
+    last_status      INTEGER,
+    created_at       INTEGER NOT NULL,
+    settled_at       INTEGER
+  );
+  CREATE INDEX exchange_withdrawals_due_idx ON exchange_withdrawals (status, next_attempt_at);
+  CREATE INDEX exchange_withdrawals_member_idx ON exchange_withdrawals (member_id, created_at);
+  `,
+
+  // --- 8: 終値予想、順位予想、値幅予想、みんなで予想 ---
+  `
+  -- 1 時間足 1 本に対応する回。closest と volatility は subject が銘柄、ranking は比べる銘柄をカンマで並べたもの。
+  -- 銘柄の組を回に書いておくので、途中で設定を変えても進行中の回は変わらない。
+  CREATE TABLE game_rounds (
+    id          TEXT PRIMARY KEY,
+    game        TEXT NOT NULL CHECK (game IN ('closest', 'ranking', 'volatility')),
+    subject     TEXT NOT NULL,
+    starts_at   INTEGER NOT NULL,
+    ends_at     INTEGER NOT NULL,
+    status      TEXT NOT NULL CHECK (status IN ('open', 'settled', 'refunded')),
+    -- 決着の中身の JSON。値段と勝ち。
+    result      TEXT,
+    settled_at  INTEGER,
+    UNIQUE (game, subject, starts_at)
+  );
+  CREATE INDEX game_rounds_status_idx ON game_rounds (status, ends_at);
+
+  -- 1 回に 1 人 1 つ。pick は closest なら予想した値段、ranking なら銘柄、volatility なら値幅の帯。
+  -- 賭け金は特別口座 '@games' に預ける。金額は SOAG の 10 進文字列。
+  CREATE TABLE game_entries (
+    id          TEXT PRIMARY KEY,
+    round_id    TEXT NOT NULL REFERENCES game_rounds(id),
+    member_id   TEXT NOT NULL REFERENCES members(id),
+    pick        TEXT NOT NULL,
+    stake       TEXT NOT NULL,
+    payout      TEXT,
+    placed_at   INTEGER NOT NULL,
+    UNIQUE (round_id, member_id)
+  );
+  CREATE INDEX game_entries_member_idx ON game_entries (member_id, placed_at);
+
+  -- メンバーが出した問い。開くのも判定するのも過半数の提案を通す。
+  CREATE TABLE markets (
+    id                   TEXT PRIMARY KEY,
+    proposal_id          TEXT NOT NULL UNIQUE REFERENCES proposals(id),
+    question             TEXT NOT NULL,
+    criteria             TEXT NOT NULL,
+    closes_at            INTEGER NOT NULL,
+    status               TEXT NOT NULL CHECK (status IN ('open', 'resolved', 'refunded')),
+    outcome              TEXT CHECK (outcome IN ('yes', 'no')),
+    created_by           TEXT REFERENCES members(id),
+    created_at           INTEGER NOT NULL,
+    resolved_at          INTEGER,
+    resolved_by_proposal TEXT
+  );
+  CREATE INDEX markets_status_idx ON markets (status, closes_at);
+
+  -- 賭け金は特別口座 '@markets' に預ける。
+  CREATE TABLE market_bets (
+    id          TEXT PRIMARY KEY,
+    market_id   TEXT NOT NULL REFERENCES markets(id),
+    member_id   TEXT NOT NULL REFERENCES members(id),
+    side        TEXT NOT NULL CHECK (side IN ('yes', 'no')),
+    stake       TEXT NOT NULL,
+    payout      TEXT,
+    placed_at   INTEGER NOT NULL
+  );
+  CREATE INDEX market_bets_market_idx ON market_bets (market_id);
+  CREATE INDEX market_bets_member_idx ON market_bets (member_id, placed_at);
+  `,
 ];

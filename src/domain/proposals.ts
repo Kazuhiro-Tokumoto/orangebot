@@ -31,7 +31,20 @@ import {
   type VoterSnapshot,
   type VoteChoice,
 } from './governance.js';
-import { mint, parseAmount } from './ledger.js';
+import { AddressError, decodeAddress } from '../wallet/address.js';
+import { getWallet } from '../wallet/store.js';
+import { DUST_THRESHOLD, LOCK_VERSION_PUBKEY, MAX_SUPPLY_ATOMIC } from '../wallet/tx.js';
+import { formatAmount, mint, parseAmount } from './ledger.js';
+import {
+  VERDICT_LABELS,
+  openMarket,
+  resolveMarket,
+  validateMarketOpen,
+  validateMarketResolve,
+  type MarketOpenPayload,
+  type MarketResolvePayload,
+} from './markets.js';
+import { formatUnits, parseUnits } from './units.js';
 import {
   activateTicketsForProposal,
   issueTicket,
@@ -50,10 +63,18 @@ export interface MemberAddPayload {
   readonly displayName: string;
 }
 
+export interface WalletSendPayload {
+  /** 宛先の住所。提案の時点でウォレットのネットワークに合うことを確かめてある。 */
+  readonly to: string;
+  /** atomic の 10 進文字列。 */
+  readonly amount: string;
+  readonly memo: string;
+}
+
 export interface MintPayload {
   /** 発行先のメンバー ID。 */
   readonly to: string;
-  /** 10 進文字列。BigInt で扱う。 */
+  /** SOAG の 10 進文字列。BigInt で扱う。 */
   readonly amount: string;
   readonly memo: string;
 }
@@ -189,16 +210,72 @@ function describe(
   subject: MemberRow | undefined,
   payload: MemberAddPayload | null,
   mintPayload: MintPayload | null = null,
+  sendPayload: WalletSendPayload | null = null,
+  marketPayload: MarketOpenPayload | MarketResolvePayload | null = null,
 ): string {
   const label = PROPOSAL_TYPE_LABELS[type];
+  if (marketPayload !== null && 'outcome' in marketPayload) {
+    return `${label}: ${marketPayload.question} → ${VERDICT_LABELS[marketPayload.outcome]}`;
+  }
+  if (marketPayload !== null) return `${label}: ${marketPayload.question}`;
+  if (type === 'wallet.send' && sendPayload !== null) {
+    return `${label}: ${sendPayload.to} へ ${formatUnits(BigInt(sendPayload.amount))} OAG`;
+  }
   if (type === 'member.add' && payload !== null) {
     return `${label}: ${payload.displayName}（${payload.username}）`;
   }
   if (type === 'ledger.mint' && mintPayload !== null) {
     const to = subject === undefined ? mintPayload.to : subject.displayName;
-    return `${label}: ${to} へ ${BigInt(mintPayload.amount).toLocaleString('en-US')} BOAG`;
+    return `${label}: ${to} へ ${formatAmount(BigInt(mintPayload.amount))} BOAG`;
   }
   return subject === undefined ? label : `${label}: ${subject.displayName}（${subject.username}）`;
+}
+
+/**
+ * OAG 送金の提案を確かめる。
+ *
+ * 可決したあとで送れないと分かっても遅いので、ここで宛先と額を厳しく見る。
+ * 残高は見ない。承認が集まるまでの間に入金も出金もありうるため、
+ * 足りるかどうかは送る瞬間にノードへ問い合わせて決める。
+ */
+function validateWalletSendPayload(
+  db: Db,
+  payload: Record<string, unknown>,
+): WalletSendPayload | Failure {
+  const wallet = getWallet(db);
+  if (wallet === undefined) return { ok: false, reason: 'ウォレットがまだありません' };
+
+  const to = typeof payload['to'] === 'string' ? payload['to'].trim() : '';
+  try {
+    const decoded = decodeAddress(wallet.network, to);
+    if (decoded.version !== LOCK_VERSION_PUBKEY) {
+      return {
+        ok: false,
+        reason: `版数 ${String(decoded.version)} の住所にはまだ送れません。送ると資金を失います`,
+      };
+    }
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      reason: error instanceof AddressError ? error.message : '宛先の住所が読めません',
+    };
+  }
+
+  const amount = parseUnits(typeof payload['amount'] === 'string' ? payload['amount'] : '');
+  if (amount === undefined || amount <= 0n) {
+    return { ok: false, reason: '送る額は 0 より大きく、小数 16 桁までで入力してください' };
+  }
+  if (amount < DUST_THRESHOLD) {
+    return { ok: false, reason: '送る額が 0.0015 OAG を下回ります。ノードが中継しません' };
+  }
+  if (amount > MAX_SUPPLY_ATOMIC) return { ok: false, reason: '送る額が総発行量を超えています' };
+
+  const memoRaw = payload['memo'];
+  return {
+    to,
+    amount: amount.toString(),
+    memo: typeof memoRaw === 'string' ? memoRaw.trim().slice(0, 200) : '',
+  };
 }
 
 function validateMemberAddPayload(
@@ -263,10 +340,24 @@ export function createProposal(db: Db, input: CreateProposalInput): CreatePropos
 
     let addPayload: MemberAddPayload | null = null;
     let mintPayload: MintPayload | null = null;
-    if (input.type === 'member.add') {
+    let sendPayload: WalletSendPayload | null = null;
+    let marketPayload: MarketOpenPayload | MarketResolvePayload | null = null;
+    if (input.type === 'market.open') {
+      const parsed = validateMarketOpen(input.payload ?? {}, now);
+      if ('ok' in parsed) return parsed;
+      marketPayload = parsed;
+    } else if (input.type === 'market.resolve') {
+      const parsed = validateMarketResolve(tx, input.payload ?? {}, now);
+      if ('ok' in parsed) return parsed;
+      marketPayload = parsed;
+    } else if (input.type === 'member.add') {
       const parsed = validateMemberAddPayload(tx, input.payload ?? {});
       if ('ok' in parsed) return parsed;
       addPayload = parsed;
+    } else if (input.type === 'wallet.send') {
+      const parsed = validateWalletSendPayload(tx, input.payload ?? {});
+      if ('ok' in parsed) return parsed;
+      sendPayload = parsed;
     } else if (input.type === 'ledger.mint') {
       if (subject === undefined || subject.status !== 'active') {
         return { ok: false, reason: '発行先は有効なメンバーである必要があります' };
@@ -275,7 +366,7 @@ export function createProposal(db: Db, input: CreateProposalInput): CreatePropos
         typeof input.payload?.['amount'] === 'string' ? input.payload['amount'] : '',
       );
       if (amount === undefined) {
-        return { ok: false, reason: '発行額は 1 以上の整数で入力してください' };
+        return { ok: false, reason: '発行額は 0 より大きく、小数 16 桁までで入力してください' };
       }
       const memoRaw = input.payload?.['memo'];
       mintPayload = {
@@ -302,8 +393,10 @@ export function createProposal(db: Db, input: CreateProposalInput): CreatePropos
       .values({
         id,
         type: input.type,
-        summary: describe(input.type, subject, addPayload, mintPayload),
-        payload: JSON.stringify(addPayload ?? mintPayload ?? input.payload ?? {}),
+        summary: describe(input.type, subject, addPayload, mintPayload, sendPayload, marketPayload),
+        payload: JSON.stringify(
+          addPayload ?? mintPayload ?? sendPayload ?? marketPayload ?? input.payload ?? {},
+        ),
         proposedBy: input.proposedBy,
         subjectMemberId: subjectId,
         status: 'open',
@@ -542,6 +635,29 @@ function executeProposal(db: Db, row: ProposalRow, now: number): void {
       issueTicketForProposal(db, subjectId, row.id, now);
       return;
     }
+
+    case 'wallet.send':
+      // 可決は「送ってよい」という許可であって、ここでは送らない。
+      // 署名にはパスフレーズが要り、ノードとの通信は時間がかかるので、
+      // メンバーが画面からパスフレーズを入れたときに wallet/send.ts が送る。
+      return;
+
+    case 'market.open':
+      openMarket(db, {
+        proposalId: row.id,
+        payload: parsePayload(row.payload) as unknown as MarketOpenPayload,
+        createdBy: row.proposedBy,
+        now,
+      });
+      return;
+
+    case 'market.resolve':
+      resolveMarket(db, {
+        proposalId: row.id,
+        payload: parsePayload(row.payload) as unknown as MarketResolvePayload,
+        now,
+      });
+      return;
   }
 }
 

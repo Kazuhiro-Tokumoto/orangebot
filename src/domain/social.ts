@@ -43,7 +43,7 @@ function checkAuthor(db: Db, memberId: string): SocialFailure | undefined {
 
 function checkBody(body: string): SocialFailure | undefined {
   if (body === '') return { ok: false, reason: '本文が空です' };
-  // 文字数は見た目の 1 文字で数える。絵文字を 2 と数えると上限が不公平になる。
+  // 文字数は見た目の 1 文字で数える。サロゲートペアの文字を 2 と数えると上限が不公平になる。
   if ([...body].length > MAX_BODY_LENGTH) {
     return { ok: false, reason: `本文は ${String(MAX_BODY_LENGTH)} 文字までです` };
   }
@@ -187,7 +187,9 @@ export function tipPost(
   }
 
   const amount = parseAmount(input.amount);
-  if (amount === undefined) return { ok: false, reason: '投げ銭は 1 以上の整数で入れてください' };
+  if (amount === undefined) {
+    return { ok: false, reason: '投げ銭は 0 より大きく、小数 16 桁までで入れてください' };
+  }
 
   return transfer(db, {
     from: input.fromMemberId,

@@ -4,6 +4,7 @@ import { verifyAuditLog } from '../db/audit.js';
 import { openTestDatabase, type Database_ } from '../db/client.js';
 import { members, type MemberRow } from '../db/schema.js';
 import { balanceOf, mint, verifyLedger } from './ledger.js';
+import { SOAG_PER_BOAG } from './units.js';
 import {
   MAX_BODY_LENGTH,
   createPost,
@@ -17,6 +18,8 @@ import {
 const T0 = 1_700_000_000_000;
 const ALICE = '1529717434259345489';
 const BOB = '1700000000000000001';
+/** 1 BOAG。台帳は SOAG の整数で持つ。 */
+const B = SOAG_PER_BOAG;
 
 let handle: Database_;
 
@@ -54,9 +57,10 @@ describe('投稿', () => {
   });
 
   it('長さは見た目の文字数で数える', () => {
-    const emoji = '🍊'.repeat(MAX_BODY_LENGTH);
-    expect(createPost(db(), { authorId: ALICE, body: emoji, now: T0 }).ok).toBe(true);
-    expect(createPost(db(), { authorId: ALICE, body: `${emoji}🍊`, now: T0 }).ok).toBe(false);
+    // サロゲートペアで表す文字。JavaScript の length では 1 文字が 2 と数えられる。
+    const wide = '𠮷'.repeat(MAX_BODY_LENGTH);
+    expect(createPost(db(), { authorId: ALICE, body: wide, now: T0 }).ok).toBe(true);
+    expect(createPost(db(), { authorId: ALICE, body: `${wide}𠮷`, now: T0 }).ok).toBe(false);
   });
 
   it('有効なメンバーでなければ書けない', () => {
@@ -125,7 +129,13 @@ describe('削除', () => {
 
 describe('投げ銭', () => {
   beforeEach(() => {
-    mint(db(), { to: BOB, amount: 100n, ref: 'test', now: T0 });
+    mint(db(), { to: BOB, amount: 100n * B, ref: 'test', now: T0 });
+  });
+
+  it('小数の額も投げられる', () => {
+    const root = post(ALICE, 'いい話');
+    expect(tipPost(db(), { postId: root, fromMemberId: BOB, amount: '0.5', now: T0 }).ok).toBe(true);
+    expect(balanceOf(db(), ALICE)).toBe(B / 2n);
   });
 
   it('書き手の口座へそのまま移る', () => {
@@ -133,8 +143,8 @@ describe('投げ銭', () => {
     const result = tipPost(db(), { postId: root, fromMemberId: BOB, amount: '30', now: T0 });
 
     expect(result.ok).toBe(true);
-    expect(balanceOf(db(), BOB)).toBe(70n);
-    expect(balanceOf(db(), ALICE)).toBe(30n);
+    expect(balanceOf(db(), BOB)).toBe(70n * B);
+    expect(balanceOf(db(), ALICE)).toBe(30n * B);
     expect(verifyLedger(db()).ok).toBe(true);
     expect(verifyAuditLog(db()).ok).toBe(true);
   });
@@ -144,8 +154,8 @@ describe('投げ銭', () => {
     tipPost(db(), { postId: root, fromMemberId: BOB, amount: '10', now: T0 });
     tipPost(db(), { postId: root, fromMemberId: BOB, amount: '5', now: T0 });
 
-    expect(tipsFor(db(), [root]).get(root)).toEqual({ total: 15n, count: 2 });
-    expect(listTimeline(db())[0]?.tips.total).toBe(15n);
+    expect(tipsFor(db(), [root]).get(root)).toEqual({ total: 15n * B, count: 2 });
+    expect(listTimeline(db())[0]?.tips.total).toBe(15n * B);
   });
 
   it('残高を超えては投げられない', () => {
@@ -153,7 +163,7 @@ describe('投げ銭', () => {
     const result = tipPost(db(), { postId: root, fromMemberId: BOB, amount: '101', now: T0 });
 
     expect(result.ok).toBe(false);
-    expect(balanceOf(db(), BOB)).toBe(100n);
+    expect(balanceOf(db(), BOB)).toBe(100n * B);
   });
 
   it('自分の投稿には投げられない', () => {
@@ -161,12 +171,12 @@ describe('投げ銭', () => {
     expect(tipPost(db(), { postId: own, fromMemberId: BOB, amount: '1', now: T0 }).ok).toBe(false);
   });
 
-  it('整数でない額や 0 は断る', () => {
+  it('0 以下の額や、小数 17 桁以上は断る', () => {
     const root = post(ALICE, 'いい話');
-    for (const amount of ['0', '-5', '1.5', 'たくさん']) {
+    for (const amount of ['0', '-5', '0.00000000000000001', 'たくさん']) {
       expect(tipPost(db(), { postId: root, fromMemberId: BOB, amount, now: T0 }).ok).toBe(false);
     }
-    expect(balanceOf(db(), BOB)).toBe(100n);
+    expect(balanceOf(db(), BOB)).toBe(100n * B);
   });
 
   it('消された投稿には投げられない', () => {
@@ -181,8 +191,8 @@ describe('投げ銭', () => {
     tipPost(db(), { postId: root, fromMemberId: BOB, amount: '10', now: T0 });
     deletePost(db(), { postId: root, memberId: ALICE, now: T0 });
 
-    expect(tipsFor(db(), [root]).get(root)?.total).toBe(10n);
-    expect(balanceOf(db(), ALICE)).toBe(10n);
+    expect(tipsFor(db(), [root]).get(root)?.total).toBe(10n * B);
+    expect(balanceOf(db(), ALICE)).toBe(10n * B);
   });
 
   it('停止中の書き手には投げられない', () => {
@@ -190,6 +200,6 @@ describe('投げ銭', () => {
     db().update(members).set({ status: 'suspended' }).where(eq(members.id, ALICE)).run();
 
     expect(tipPost(db(), { postId: root, fromMemberId: BOB, amount: '1', now: T0 }).ok).toBe(false);
-    expect(balanceOf(db(), BOB)).toBe(100n);
+    expect(balanceOf(db(), BOB)).toBe(100n * B);
   });
 });

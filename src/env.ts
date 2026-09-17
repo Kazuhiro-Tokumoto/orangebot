@@ -27,6 +27,26 @@ export interface OagConfig {
   readonly cookiePath: string;
 }
 
+export interface PredictionConfig {
+  /** 予想を受け付ける銘柄。取引所のシンボル (例: BTCUSDT)。 */
+  readonly symbols: readonly string[];
+  /** 順位予想で比べる銘柄。2 つ未満なら順位予想は出さない。 */
+  readonly rankingSymbols: readonly string[];
+  /** 足を取り寄せる先。 */
+  readonly priceBaseUrl: string;
+}
+
+export interface ExchangeConfig {
+  /** 相手の bot と共有する署名の秘密。32 文字以上。 */
+  readonly secret: string;
+  /** 相手の受け口。未設定なら出金は受け付けず、入金だけ動く。 */
+  readonly partnerUrl: string | undefined;
+  readonly limits: {
+    readonly maxPtPerRequest: bigint;
+    readonly maxPtPerDay: bigint;
+  };
+}
+
 export interface Env {
   readonly nodeEnv: NodeEnv;
   readonly port: number;
@@ -43,6 +63,10 @@ export interface Env {
   readonly tls: TlsConfig | undefined;
   /** 未設定ならウォレットは繋がない。残高も送金も出せない。 */
   readonly oag: OagConfig | undefined;
+  /** PREDICTION_SYMBOLS=none で止める。 */
+  readonly prediction: PredictionConfig | undefined;
+  /** EXCHANGE_SECRET を設定したときだけ有効。 */
+  readonly exchange: ExchangeConfig | undefined;
   /** 未設定なら Discord 連携を行わず Web だけで動く。 */
   readonly discord: DiscordConfig | undefined;
 }
@@ -190,6 +214,114 @@ function parseOag(source: NodeJS.ProcessEnv): OagConfig | undefined {
   return { network, rpcUrl: url.origin, cookiePath };
 }
 
+const DEFAULT_PREDICTION_SYMBOLS = ['BTCUSDT', 'ETHUSDT'];
+const DEFAULT_RANKING_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'];
+
+function parseSymbols(raw: string | undefined, key: string, fallback: readonly string[]): string[] {
+  const symbols =
+    raw === undefined
+      ? fallback
+      : raw
+          .split(',')
+          .map((item) => item.trim().toUpperCase())
+          .filter((item) => item !== '');
+  for (const symbol of symbols) {
+    if (!/^[A-Z0-9]{5,20}$/.test(symbol)) {
+      throw new EnvError(`${key} のシンボルが不正です: ${symbol}`);
+    }
+  }
+  return [...new Set(symbols)];
+}
+
+/** 値動きの予想。既定で BTC と ETH を受け付ける。none で止める。 */
+function parsePrediction(source: NodeJS.ProcessEnv): PredictionConfig | undefined {
+  const raw = read(source, 'PREDICTION_SYMBOLS');
+  if (raw?.toLowerCase() === 'none') return undefined;
+
+  const symbols = parseSymbols(raw, 'PREDICTION_SYMBOLS', DEFAULT_PREDICTION_SYMBOLS);
+  if (symbols.length === 0) return undefined;
+
+  const rankingRaw = read(source, 'RANKING_SYMBOLS');
+  const rankingSymbols =
+    rankingRaw?.toLowerCase() === 'none'
+      ? []
+      : parseSymbols(rankingRaw, 'RANKING_SYMBOLS', DEFAULT_RANKING_SYMBOLS);
+
+  const base = read(source, 'PRICE_API_BASE_URL') ?? 'https://data-api.binance.vision';
+  let url: URL;
+  try {
+    url = new URL(base);
+  } catch {
+    throw new EnvError(`PRICE_API_BASE_URL が URL として不正です: ${base}`);
+  }
+  return {
+    symbols,
+    rankingSymbols: rankingSymbols.length < 2 ? [] : rankingSymbols,
+    priceBaseUrl: url.origin,
+  };
+}
+
+function parsePtLimit(raw: string | undefined, key: string, fallback: bigint): bigint {
+  if (raw === undefined) return fallback;
+  if (!/^[1-9]\d{0,20}$/.test(raw)) throw new EnvError(`${key} は 1 以上の整数にしてください`);
+  return BigInt(raw);
+}
+
+/**
+ * 外部の bot との pt の交換。
+ *
+ * 秘密が漏れると BOAG を好きなだけ作られるので、上限は必ず効かせる。
+ * 既定は 1 回 10,000 BOAG ぶん、24 時間で 100,000 BOAG ぶん。
+ */
+function parseExchange(source: NodeJS.ProcessEnv, nodeEnv: NodeEnv): ExchangeConfig | undefined {
+  const secret = read(source, 'EXCHANGE_SECRET');
+  const partnerRaw = read(source, 'EXCHANGE_PARTNER_URL');
+  if (secret === undefined) {
+    if (partnerRaw !== undefined) {
+      throw new EnvError('EXCHANGE_PARTNER_URL を使うには EXCHANGE_SECRET が必要です');
+    }
+    return undefined;
+  }
+  if (secret.length < 32) throw new EnvError('EXCHANGE_SECRET は 32 文字以上にしてください');
+
+  let partnerUrl: string | undefined;
+  if (partnerRaw !== undefined) {
+    let url: URL;
+    try {
+      url = new URL(partnerRaw);
+    } catch {
+      throw new EnvError(`EXCHANGE_PARTNER_URL が URL として不正です: ${partnerRaw}`);
+    }
+    if (nodeEnv === 'production' && url.protocol !== 'https:') {
+      throw new EnvError('EXCHANGE_PARTNER_URL は本番環境では https である必要があります');
+    }
+    // サイトの根元に送っても受け口は無い。断られた扱いで返金が続くだけなので、起動時に止める。
+    if (url.pathname === '/' || url.pathname === '') {
+      throw new EnvError(
+        'EXCHANGE_PARTNER_URL は受け口のパスまで書いてください (例 https://oogiri-bot-cfy1.onrender.com/api/orangebot-boag-pt-exchange/v1/pt-deposits)',
+      );
+    }
+    partnerUrl = url.toString();
+  }
+
+  return {
+    secret,
+    partnerUrl,
+    limits: {
+      maxPtPerRequest: parsePtLimit(
+        read(source, 'EXCHANGE_MAX_PT_PER_REQUEST'),
+        'EXCHANGE_MAX_PT_PER_REQUEST',
+        100_000_000_000n,
+      ),
+      maxPtPerDay: parsePtLimit(
+        read(source, 'EXCHANGE_MAX_PT_PER_DAY'),
+        'EXCHANGE_MAX_PT_PER_DAY',
+        1_000_000_000_000n,
+      ),
+    },
+  };
+}
+
 function parseDiscord(source: NodeJS.ProcessEnv): DiscordConfig | undefined {
   const token = read(source, 'DISCORD_TOKEN');
   const clientId = read(source, 'DISCORD_CLIENT_ID');
@@ -233,6 +365,8 @@ export function loadEnvWithWarnings(source: NodeJS.ProcessEnv = process.env): Lo
       encryptionKey: parseEncryptionKey(encryptionRaw, warnings),
       tls,
       oag: parseOag(source),
+      prediction: parsePrediction(source),
+      exchange: parseExchange(source, nodeEnv),
       discord: parseDiscord(source),
     },
     insecureDefaults: warnings,

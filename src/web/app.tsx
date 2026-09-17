@@ -17,6 +17,11 @@ import {
 import { enrollRoutes } from './routes/enroll.js';
 import { loginRoutes } from './routes/login.js';
 import { proposalRoutes } from './routes/proposals.js';
+import { exchangeApiRoutes } from './routes/exchange-api.js';
+import { exchangeRoutes } from './routes/exchange.js';
+import { gameRoutes } from './routes/games.js';
+import { marketRoutes } from './routes/markets.js';
+import { predictRoutes } from './routes/predict.js';
 import { settingsRoutes } from './routes/settings.js';
 import { socialRoutes } from './routes/social.js';
 import { walletRoutes } from './routes/wallet.js';
@@ -29,6 +34,10 @@ export function createApp(input: AppDeps) {
   // 通知先を省かれた場合はここで受け皿を差す。route 側は常に notify を持てる。
   const deps: RouteDeps = { ...input, notify: input.notify ?? nullNotifier };
   const app = new Hono<AppBindings>();
+
+  // 外部の bot 向けの API は署名で守る。画面のセッションもクッキーも使わないので、
+  // CSRF の検査とセッションの読み込みより前に切り分ける。
+  app.route('/', exchangeApiRoutes(deps));
 
   // 素の HTML フォームなので、他所からの POST を Origin で弾く。
   app.use('*', csrf({ origin: deps.env.webOrigin }));
@@ -76,6 +85,10 @@ export function createApp(input: AppDeps) {
   app.route('/', settingsRoutes(deps));
   app.route('/', walletRoutes(deps));
   app.route('/', socialRoutes(deps));
+  app.route('/', predictRoutes(deps));
+  app.route('/', gameRoutes(deps));
+  app.route('/', marketRoutes(deps));
+  app.route('/', exchangeRoutes(deps));
 
   app.notFound((c) =>
     c.html(

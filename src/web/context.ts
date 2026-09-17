@@ -1,7 +1,9 @@
 import type { Context, MiddlewareHandler } from 'hono';
+import { getConnInfo } from '@hono/node-server/conninfo';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { loadSession, type LoadedSession } from '../auth/session.js';
 import type { Notifier } from '../bot/notify.js';
+import type { PriceSource } from '../market/price.js';
 import type { RpcClient } from '../wallet/rpc.js';
 import type { Db } from '../db/client.js';
 import type { Env } from '../env.js';
@@ -23,6 +25,10 @@ export interface AppDeps {
   readonly notify?: Notifier | undefined;
   /** 省くと残高を出さない。OAG ノードが無くてもポータルは動く。 */
   readonly rpc?: RpcClient | undefined;
+  /** 省くと予想の画面にいまの値段を出さない。決着は定期処理が行う。 */
+  readonly prices?: PriceSource | undefined;
+  /** pt への交換を受け付けた直後に呼ぶ。巡回を待たずに送り始めるため。 */
+  readonly onWithdrawalRequested?: (() => void) | undefined;
 }
 
 /** createApp が通知先を埋めたあとの形。各 route はこちらを受け取る。 */
@@ -92,10 +98,19 @@ export function viewerName(c: Context<AppBindings>): string | undefined {
   return viewer === undefined || viewer.aal < 2 ? undefined : viewer.member.displayName;
 }
 
+/**
+ * 接続元の IP。
+ *
+ * node 自身が https を終端していて前にプロキシが無いので、X-Forwarded-For は
+ * 誰でも好きに書ける。見出しは信じず、ソケットの相手を使う。
+ * app.request() で呼ぶ試験ではソケットが無いので null になる。
+ */
 export function clientIp(c: Context): string | null {
-  const forwarded = c.req.header('x-forwarded-for');
-  if (forwarded !== undefined) return forwarded.split(',')[0]?.trim() ?? null;
-  return c.req.header('x-real-ip') ?? null;
+  try {
+    return getConnInfo(c).remote.address ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function userAgent(c: Context): string | null {

@@ -56,15 +56,15 @@ export function proposalMessage(
   const lines: string[] = [];
 
   if (view.status === 'open') {
-    lines.push(`🟠 **新しい提案** — ${label}`);
+    lines.push(`**[新しい提案]** ${label}`);
   } else if (view.status === 'executed' || view.status === 'approved') {
-    lines.push(`✅ **可決** — ${label}`);
+    lines.push(`**[可決]** ${label}`);
   } else if (view.status === 'rejected') {
-    lines.push(`❌ **否決** — ${label}`);
+    lines.push(`**[否決]** ${label}`);
   } else if (view.status === 'expired') {
-    lines.push(`⌛ **期限切れ** — ${label}`);
+    lines.push(`**[期限切れ]** ${label}`);
   } else {
-    lines.push(`◽ **取り下げ** — ${label}`);
+    lines.push(`**[取り下げ]** ${label}`);
   }
 
   lines.push(`> ${view.summary}`);
@@ -91,7 +91,7 @@ export function linkMessage(message: LinkMessage): string {
 
   if (message.kind === 'enroll') {
     return [
-      `🔑 **orangebot の登録リンク**`,
+      '**orangebot の登録リンク**',
       `${message.displayName} さん、下のリンクからパスワードと二要素認証を設定してください。`,
       message.url,
       until,
@@ -100,7 +100,7 @@ export function linkMessage(message: LinkMessage): string {
   }
 
   return [
-    `🔑 **パスワード再発行の引換リンク**`,
+    '**パスワード再発行の引換リンク**',
     'このリンクは、他のメンバーの過半数が承認した時点で使えるようになります。',
     message.url,
     '承認されてから 7 日の間だけ使えます。',

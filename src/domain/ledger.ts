@@ -3,6 +3,7 @@ import { asc, desc, eq } from 'drizzle-orm';
 import { appendAudit } from '../db/audit.js';
 import type { Db } from '../db/client.js';
 import { ledgerEntries, type LedgerRow } from '../db/schema.js';
+import { formatUnits, parseUnits } from './units.js';
 
 /**
  * BOAG の内部台帳。
@@ -14,8 +15,9 @@ import { ledgerEntries, type LedgerRow } from '../db/schema.js';
  * 発行は特別口座から出て誰かに入る形で表す。したがって
  * **全行の合計が 0 でなければ、どこかで無から増えている**ことになり、検査で捕まえられる。
  *
- * 金額は整数。ポイントなので小数は持たない。桁が大きくなりうるので BigInt で扱い、
- * 保存は 10 進文字列にする。
+ * 金額は最小単位 SOAG の整数 (1 BOAG = 10^16 SOAG)。JavaScript の数値では桁が
+ * 足りないので BigInt で扱い、保存は 10 進文字列にする。画面と入力欄では
+ * 小数 16 桁の BOAG として見せる (units.ts)。
  */
 
 /** 発行元の特別口座。Discord ID は数字だけなので衝突しない。 */
@@ -295,15 +297,13 @@ export function historyOf(db: Db, accountId: string, limit = 50): LedgerRow[] {
     .all();
 }
 
-/** 表示用。桁区切りを入れるだけで、単位は付けない。 */
+/** SOAG の整数を BOAG の 10 進表記にする。単位は付けない。 */
 export function formatAmount(amount: bigint): string {
-  return amount.toLocaleString('en-US');
+  return formatUnits(amount);
 }
 
-/** 入力欄からの文字列を金額にする。 */
+/** 入力欄の BOAG を SOAG の整数にする。0 以下や小数 17 桁以上は undefined。 */
 export function parseAmount(raw: string): bigint | undefined {
-  const trimmed = raw.trim().replace(/[,_\s]/g, '');
-  if (!/^\d{1,30}$/.test(trimmed)) return undefined;
-  const value = BigInt(trimmed);
-  return value > 0n ? value : undefined;
+  const value = parseUnits(raw);
+  return value !== undefined && value > 0n ? value : undefined;
 }

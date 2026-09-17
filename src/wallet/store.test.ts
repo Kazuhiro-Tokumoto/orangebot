@@ -63,6 +63,7 @@ function fakeNode(scan: Partial<ScanResult> = {}, fail?: string): RpcClient {
     getBlockCount: () => Promise.resolve(42),
     scanUtxos: () => Promise.resolve(result),
     sendRawTransaction: () => Promise.resolve('txid'),
+    getMempool: () => Promise.resolve([]),
   };
 }
 
@@ -167,7 +168,7 @@ describe('住所', () => {
     expect(getWallet(db())?.nextReceive).toBe(2);
   });
 
-  it('見張る範囲は配った先 GAP_LIMIT 個まで、受取とお釣りの両方', async () => {
+  it('見張る範囲は受取もお釣りも、配った先 GAP_LIMIT 個まで', async () => {
     await makeWallet();
     issueReceiveAddress(db(), { actorMemberId: '1529717434259345489', now: T0 });
 
@@ -175,7 +176,8 @@ describe('住所', () => {
     if (row === undefined) throw new Error('ウォレットがありません');
     const watched = watchedAddresses(row);
 
-    expect(watched).toHaveLength((1 + GAP_LIMIT) * 2);
+    // 受取は 1 つ配ったので 1 + GAP_LIMIT、お釣りはまだ配っていないので GAP_LIMIT。
+    expect(watched).toHaveLength(1 + GAP_LIMIT + GAP_LIMIT);
     expect(new Set(watched).size).toBe(watched.length);
   });
 });

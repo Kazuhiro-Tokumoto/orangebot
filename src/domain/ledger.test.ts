@@ -18,6 +18,7 @@ import {
   transfer,
   verifyLedger,
 } from './ledger.js';
+import { SOAG_PER_BOAG } from './units.js';
 import { activateMember, createGenesisMember } from './members.js';
 import { castVote, createProposal } from './proposals.js';
 
@@ -266,6 +267,19 @@ describe('発行は過半数の承認を要する', () => {
     expect(balanceOf(db(), idOf('kazuhiro'))).toBe(0n);
   });
 
+  it('小数の額も 16 桁までなら発行できる', () => {
+    addActiveMember('kazuhiro', 'second');
+    const result = createProposal(db(), {
+      type: 'ledger.mint',
+      proposedBy: idOf('kazuhiro'),
+      subjectMemberId: idOf('second'),
+      payload: { amount: '0.0000000000000001' },
+      now: T0,
+    });
+    expect(result.ok && result.view.status).toBe('executed');
+    expect(balanceOf(db(), idOf('second'))).toBe(1n);
+  });
+
   it('他人宛なら自分の 1 票で通る', () => {
     addActiveMember('kazuhiro', 'second');
     const result = createProposal(db(), {
@@ -281,7 +295,8 @@ describe('発行は過半数の承認を要する', () => {
     // 有権者は発行先を除いた kazuhiro のみ。
     expect(result.view.tally.eligible).toEqual([idOf('kazuhiro')]);
     expect(result.view.status).toBe('executed');
-    expect(balanceOf(db(), idOf('second'))).toBe(1000n);
+    // 提案の額は BOAG で書き、台帳には SOAG の整数で入る。
+    expect(balanceOf(db(), idOf('second'))).toBe(1000n * SOAG_PER_BOAG);
     expect(verifyLedger(db()).ok).toBe(true);
   });
 
@@ -308,7 +323,7 @@ describe('発行は過半数の承認を要する', () => {
       now: T0 + 1000,
     });
     expect(voted.ok).toBe(true);
-    expect(balanceOf(db(), idOf('third'))).toBe(50n);
+    expect(balanceOf(db(), idOf('third'))).toBe(50n * SOAG_PER_BOAG);
   });
 
   it('否決されれば発行されない', () => {
@@ -353,13 +368,13 @@ describe('発行は過半数の承認を要する', () => {
     });
     if (!result.ok) return;
 
-    expect(balanceOf(db(), idOf('second'))).toBe(1000n);
+    expect(balanceOf(db(), idOf('second'))).toBe(1000n * SOAG_PER_BOAG);
     expect(db().select().from(ledgerEntries).all()).toHaveLength(2);
   });
 
   it('額が不正なら提案を作れない', () => {
     addActiveMember('kazuhiro', 'second');
-    for (const amount of ['0', '-5', 'abc', '', '1.5']) {
+    for (const amount of ['0', '-5', 'abc', '', '0.00000000000000001']) {
       const result = createProposal(db(), {
         type: 'ledger.mint',
         proposedBy: idOf('kazuhiro'),
@@ -385,17 +400,21 @@ describe('発行は過半数の承認を要する', () => {
 });
 
 describe('金額の読み書き', () => {
-  it('入力を読む', () => {
-    expect(parseAmount('1000')).toBe(1000n);
-    expect(parseAmount(' 1,000 ')).toBe(1000n);
+  it('入力を BOAG として読み、SOAG の整数にする', () => {
+    expect(parseAmount('1000')).toBe(1000n * 10n ** 16n);
+    expect(parseAmount(' 1,000 ')).toBe(1000n * 10n ** 16n);
+    expect(parseAmount('1.5')).toBe(15n * 10n ** 15n);
+    expect(parseAmount('0.0000000000000001')).toBe(1n);
     expect(parseAmount('0')).toBeUndefined();
     expect(parseAmount('-1')).toBeUndefined();
-    expect(parseAmount('1.5')).toBeUndefined();
+    expect(parseAmount('0.00000000000000001')).toBeUndefined();
     expect(parseAmount('abc')).toBeUndefined();
     expect(parseAmount('')).toBeUndefined();
   });
 
-  it('表示する', () => {
-    expect(formatAmount(1234567n)).toBe('1,234,567');
+  it('SOAG を BOAG として表示する', () => {
+    expect(formatAmount(1234567n * 10n ** 16n)).toBe('1,234,567');
+    expect(formatAmount(1n)).toBe('0.0000000000000001');
+    expect(formatAmount(-25n * 10n ** 15n)).toBe('-2.5');
   });
 });

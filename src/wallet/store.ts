@@ -13,7 +13,7 @@ import {
   derivePrivateKey,
   mnemonicToSeed,
 } from './seed.js';
-import { openMnemonic, sealMnemonic } from './vault.js';
+import { openMnemonic, sealMnemonic, type KdfParams } from './vault.js';
 
 /**
  * 組織のウォレット。ひとつだけ持つ。
@@ -57,6 +57,8 @@ export async function createWallet(
     readonly actorMemberId: string;
     readonly account?: number;
     readonly now?: number;
+    /** 試験で軽くするための入口。本番では省き、既定の約 1 秒のものを使う。 */
+    readonly kdf?: KdfParams;
   },
 ): Promise<CreatedWallet | WalletFailure> {
   if (hasWallet(db)) {
@@ -69,7 +71,11 @@ export async function createWallet(
 
   let vault: Buffer;
   try {
-    vault = await sealMnemonic(mnemonic, input.passphrase);
+    vault = await sealMnemonic(
+      mnemonic,
+      input.passphrase,
+      input.kdf === undefined ? {} : { kdf: input.kdf },
+    );
   } catch (error: unknown) {
     return { ok: false, reason: error instanceof Error ? error.message : '控えを封じられません' };
   }
@@ -86,6 +92,7 @@ export async function createWallet(
       xpub,
       vault,
       nextReceive: 0,
+      nextChange: 0,
       createdAt: now,
       createdBy: input.actorMemberId,
     })
@@ -131,11 +138,33 @@ export function addressesOf(
  * BIP44 の言う隙間の限度で、ここまで空なら以降も空だとみなしてよい。
  */
 export function watchedAddresses(wallet: WalletRow): string[] {
-  const depth = wallet.nextReceive + GAP_LIMIT;
+  return watchedEntries(wallet).map((entry) => entry.address);
+}
+
+/** 見張る住所を、導出の番号つきで返す。署名のときに鍵を引くのに使う。 */
+export function watchedEntries(wallet: WalletRow): WalletAddress[] {
   return [
-    ...addressesOf(wallet, { change: CHANGE_RECEIVE, count: depth }),
-    ...addressesOf(wallet, { change: CHANGE_INTERNAL, count: depth }),
-  ].map((entry) => entry.address);
+    ...addressesOf(wallet, { change: CHANGE_RECEIVE, count: wallet.nextReceive + GAP_LIMIT }),
+    ...addressesOf(wallet, { change: CHANGE_INTERNAL, count: wallet.nextChange + GAP_LIMIT }),
+  ];
+}
+
+/** 次のお釣り住所を配って、番号を 1 つ進める。 */
+export function issueChangeAddress(db: Db): WalletAddress | WalletFailure {
+  const wallet = getWallet(db);
+  if (wallet === undefined) return { ok: false, reason: 'ウォレットがまだありません' };
+
+  const index = wallet.nextChange;
+  const address = addressFromXpub(wallet.xpub, wallet.network, {
+    change: CHANGE_INTERNAL,
+    index,
+  });
+  db.update(wallets)
+    .set({ nextChange: index + 1 })
+    .where(eq(wallets.id, WALLET_ID))
+    .run();
+
+  return { index, change: CHANGE_INTERNAL, address };
 }
 
 /** 次の受取住所を配って、番号を 1 つ進める。 */
