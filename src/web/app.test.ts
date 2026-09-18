@@ -1214,13 +1214,64 @@ describe('交換の API', () => {
     expect((await call('GET', '/api/orangebot-boag-pt-exchange/v1/members/1700000000000000009')).status).toBe(404);
 
     const rate = await call('GET', '/api/orangebot-boag-pt-exchange/v1/rate');
-    expect(rate.json).toEqual({ ptPerBoag: '10000000', soagPerPt: '1000000000', decimals: 16 });
+    expect(rate.json).toEqual({
+      ptPerBoag: '10000000',
+      soagPerPt: '1000000000',
+      decimals: 16,
+      limits: { maxPtPerRequest: '100000000000', maxPtPerDay: '1000000000000' },
+    });
   });
 
   it('交換を止めていれば 503', async () => {
     env = testEnv();
     app = createApp({ db: handle.db, env });
     expect((await call('GET', '/api/orangebot-boag-pt-exchange/v1/rate')).status).toBe(503);
+  });
+
+  it('生存の確認は署名なしで通り、止めていてもそう答える', async () => {
+    const open = await app.request(`${ORIGIN}/api/orangebot-boag-pt-exchange/v1/health`);
+    expect(open.status).toBe(200);
+    expect(await open.json()).toMatchObject({ ok: true, version: 'OBX1', exchange: 'enabled' });
+
+    env = testEnv();
+    app = createApp({ db: handle.db, env });
+    const disabled = await app.request(`${ORIGIN}/api/orangebot-boag-pt-exchange/v1/health`);
+    expect(disabled.status).toBe(200);
+    expect(await disabled.json()).toMatchObject({ ok: true, exchange: 'disabled' });
+  });
+
+  it('生存の確認でも残高や取引は出さない', async () => {
+    mint(handle.db, { to: GENESIS_DISCORD_ID, amount: SOAG_PER_BOAG, ref: 'test' });
+    const res = await app.request(`${ORIGIN}/api/orangebot-boag-pt-exchange/v1/health`);
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(Object.keys(body).sort()).toEqual(['exchange', 'ok', 'serverTime', 'version']);
+  });
+
+  it('こちらの時計を見出しに付ける。相手が時計のずれを自分で直せるように', async () => {
+    const unsigned = await app.request(`${ORIGIN}/api/orangebot-boag-pt-exchange/v1/rate`);
+    expect(unsigned.status).toBe(401);
+
+    const serverTime = Number(unsigned.headers.get('x-exchange-server-time'));
+    expect(Math.abs(serverTime - Math.floor(Date.now() / 1000))).toBeLessThanOrEqual(5);
+  });
+
+  it('時計が 300 秒を超えてずれていれば断る', async () => {
+    const path = '/api/orangebot-boag-pt-exchange/v1/rate';
+    const timestamp = String(Math.floor(Date.now() / 1000) - 301);
+    const res = await app.request(`${ORIGIN}${path}`, {
+      headers: {
+        'x-exchange-timestamp': timestamp,
+        'x-exchange-signature': sign(SECRET, {
+          direction: 'to-orangebot',
+          method: 'GET',
+          path,
+          timestamp,
+          body: '',
+        }),
+      },
+    });
+    expect(res.status).toBe(401);
   });
 
   it('画面から pt に換えると残高が引かれ、出金の記録ができる', async () => {
