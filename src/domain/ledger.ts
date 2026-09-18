@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { asc, desc, eq } from 'drizzle-orm';
 import { appendAudit } from '../db/audit.js';
 import type { Db } from '../db/client.js';
+import { getMember } from '../db/members.js';
 import { ledgerEntries, type LedgerRow } from '../db/schema.js';
 import { formatUnits, parseUnits } from './units.js';
 
@@ -212,6 +213,51 @@ export function transfer(
   });
 }
 
+/**
+ * メンバー同士で送る。画面から直接呼ぶ入口。
+ *
+ * transfer は口座しか見ないので、相手が今どういう状態かの判断はここで行う。
+ * 停止・除名された人へ送ると、受け取り手が使えないまま残高だけが動いてしまう。
+ * 提案は要らない。自分の残高を動かすだけで、無から増えるわけではないため。
+ */
+export function sendToMember(
+  db: Db,
+  input: {
+    readonly fromMemberId: string;
+    /** 宛先のメンバー ID。画面の一覧から選ぶ。 */
+    readonly toMemberId: string;
+    /** 入力欄に入った BOAG の 10 進表記。 */
+    readonly amount: string;
+    readonly memo?: string;
+    readonly now?: number;
+  },
+): LedgerResult {
+  const sender = getMember(db, input.fromMemberId);
+  if (sender === undefined || sender.status !== 'active') {
+    return { ok: false, reason: '有効なメンバーだけが送れます' };
+  }
+
+  const recipient = getMember(db, input.toMemberId);
+  if (recipient === undefined) return { ok: false, reason: 'その宛先のメンバーはいません' };
+  if (recipient.id === sender.id) return { ok: false, reason: '自分には送れません' };
+  if (recipient.status !== 'active') {
+    return { ok: false, reason: '相手が今は受け取れない状態です' };
+  }
+
+  const amount = parseAmount(input.amount);
+  if (amount === undefined) {
+    return { ok: false, reason: '送る額は 0 より大きく、小数 16 桁までで入れてください' };
+  }
+
+  return transfer(db, {
+    from: sender.id,
+    to: recipient.id,
+    amount,
+    memo: (input.memo ?? '').trim().slice(0, 200),
+    now: input.now ?? Date.now(),
+  });
+}
+
 /** 焼却する。特別口座へ戻すので、発行総量が減る。 */
 export function burn(
   db: Db,
@@ -295,6 +341,46 @@ export function historyOf(db: Db, accountId: string, limit = 50): LedgerRow[] {
     .orderBy(desc(ledgerEntries.createdAt))
     .limit(limit)
     .all();
+}
+
+export interface MovementView {
+  readonly txId: string;
+  readonly kind: LedgerKind;
+  /** その口座から見た増減。受け取りなら正、送りなら負。 */
+  readonly amount: bigint;
+  /** 動きの相手側の口座。'@supply' のような特別口座もそのまま返す。 */
+  readonly counterparty: string | null;
+  readonly memo: string;
+  readonly ref: string | null;
+  readonly createdAt: number;
+}
+
+/**
+ * 口座の動きを、相手の口座つきで新しい順に返す。
+ *
+ * 台帳は 1 つの動きを複数行に分けて持つので、自分の行だけでは相手が分からない。
+ * 同じ tx_id の中から符号が逆の行を引いて相手とする。
+ */
+export function recentMovements(db: Db, accountId: string, limit = 50): MovementView[] {
+  return historyOf(db, accountId, limit).map((row) => {
+    const amount = BigInt(row.amount);
+    const other = db
+      .select()
+      .from(ledgerEntries)
+      .where(eq(ledgerEntries.txId, row.txId))
+      .all()
+      .find((entry) => entry.accountId !== accountId && BigInt(entry.amount) * amount < 0n);
+
+    return {
+      txId: row.txId,
+      kind: row.kind,
+      amount,
+      counterparty: other?.accountId ?? null,
+      memo: row.memo,
+      ref: row.ref,
+      createdAt: row.createdAt,
+    };
+  });
 }
 
 /** SOAG の整数を BOAG の 10 進表記にする。単位は付けない。 */

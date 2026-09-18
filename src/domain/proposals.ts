@@ -224,6 +224,11 @@ function describe(
   if (type === 'member.add' && payload !== null) {
     return `${label}: ${payload.displayName}（${payload.username}）`;
   }
+  if (type === 'member.reinstate' && subject !== undefined) {
+    // 停止からの復帰と除名からの復帰では、本人がやることが違う。一覧で見分けられるようにする。
+    const kind = subject.status === 'removed' ? '除名解除' : '停止解除';
+    return `${label}（${kind}）: ${subject.displayName}（${subject.username}）`;
+  }
   if (type === 'ledger.mint' && mintPayload !== null) {
     const to = subject === undefined ? mintPayload.to : subject.displayName;
     return `${label}: ${to} へ ${formatAmount(BigInt(mintPayload.amount))} BOAG`;
@@ -377,8 +382,11 @@ export function createProposal(db: Db, input: CreateProposalInput): CreatePropos
     } else if (subject === undefined) {
       return { ok: false, reason: 'この提案には対象メンバーの指定が必要です' };
     } else if (input.type === 'member.reinstate') {
-      if (subject.status !== 'suspended') {
-        return { ok: false, reason: '復帰させられるのは一時停止中のメンバーだけです' };
+      if (subject.status !== 'suspended' && subject.status !== 'removed') {
+        return {
+          ok: false,
+          reason: '復帰させられるのは一時停止中か除名済みのメンバーだけです',
+        };
       }
     } else if (subject.status !== 'active') {
       return { ok: false, reason: '対象のメンバーが有効な状態ではありません' };
@@ -602,7 +610,26 @@ function executeProposal(db: Db, row: ProposalRow, now: number): void {
 
     case 'member.reinstate': {
       if (subjectId === null) return;
-      setMemberStatus(db, subjectId, 'active', now);
+
+      // 提案した時ではなく、実行する今の状態で決める。
+      // 同じ人に復帰の提案が 2 本通っていることがあるため。
+      const subject = getMember(db, subjectId);
+
+      // 除名のときに資格情報を消してある。そのまま active に戻すと、
+      // ログインできないのに有権者として数えられる人ができてしまい、
+      // 必要票数だけが増えて議事が止まる。登録待ちに戻して、
+      // 本人にパスワードと二要素を入れ直してもらう。
+      if (subject?.status === 'removed') {
+        setMemberStatus(db, subjectId, 'pending', now);
+        // 除名より前に配ってあった登録リンクを生き返らせない。
+        // 登録リンクは可決後に改めて出す。
+        revokeOpenTickets(db, subjectId, 'enroll');
+        return;
+      }
+
+      // 一時停止はセッションを切っただけなので、そのまま戻せる。
+      // 既に登録待ち・有効に戻っているなら、ここでは何もしない。
+      if (subject?.status === 'suspended') setMemberStatus(db, subjectId, 'active', now);
       return;
     }
 

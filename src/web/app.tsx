@@ -14,6 +14,7 @@ import {
   type AppDeps,
   type RouteDeps,
 } from './context.js';
+import { boagRoutes } from './routes/boag.js';
 import { enrollRoutes } from './routes/enroll.js';
 import { loginRoutes } from './routes/login.js';
 import { proposalRoutes } from './routes/proposals.js';
@@ -89,6 +90,7 @@ export function createApp(input: AppDeps) {
   app.route('/', gameRoutes(deps));
   app.route('/', marketRoutes(deps));
   app.route('/', exchangeRoutes(deps));
+  app.route('/', boagRoutes(deps));
 
   app.notFound((c) =>
     c.html(

@@ -17,7 +17,7 @@ import { listSessions } from '../auth/session.js';
 import { setPassword } from '../auth/credentials.js';
 import { TOTP_PERIOD, generateSecret, loadSecret, storeSecret } from '../auth/totp.js';
 import { openTestDatabase, type Database_ } from '../db/client.js';
-import { getMemberByUsername, listAllMembers } from '../db/members.js';
+import { getMemberByUsername, listAllMembers, setMemberStatus } from '../db/members.js';
 import { loadEnv, type Env } from '../env.js';
 import { balanceOf, mint } from '../domain/ledger.js';
 import { SOAG_PER_BOAG } from '../domain/units.js';
@@ -891,6 +891,100 @@ describe('タイムライン', () => {
     const client = await signIn();
     const res = await client.get('/posts/00000000-0000-0000-0000-000000000000');
     expect(res.status).toBe(404);
+  });
+});
+
+describe('BOAG のやりとりの画面', () => {
+  const BRAVO_ID = '1700000000000000002';
+
+  /** 2 人目のメンバーを、登録を済ませた状態で直に置く。 */
+  async function addBravo(): Promise<void> {
+    handle.db
+      .insert(members)
+      .values({
+        id: BRAVO_ID,
+        username: 'bravo',
+        displayName: 'ブラボー',
+        status: 'active',
+        createdAt: Date.now(),
+        activatedAt: Date.now(),
+      })
+      .run();
+    const set = await setPassword(handle.db, { memberId: BRAVO_ID, password: PASSWORD });
+    expect(set.ok).toBe(true);
+    storeSecret(handle.db, {
+      memberId: BRAVO_ID,
+      secret: generateSecret(),
+      key: env.encryptionKey,
+      confirmed: true,
+    });
+  }
+
+  beforeEach(async () => {
+    await enroll(bootstrap());
+    await addBravo();
+  });
+
+  it('ログインしていなければ開けない', async () => {
+    const res = await new Client().get('/boag');
+    expect(res.headers.get('location')).toBe('/login');
+  });
+
+  it('送ると双方の残高が動く', async () => {
+    mint(handle.db, { to: GENESIS_DISCORD_ID, amount: 50n * SOAG_PER_BOAG, ref: 'test' });
+    const client = await signIn();
+
+    const res = await client.post('/boag/send', {
+      toMemberId: BRAVO_ID,
+      amount: '12.5',
+      memo: 'このあいだのぶん',
+    });
+    expect(res.headers.get('location')).toBe('/boag?done=sent');
+
+    expect(balanceOf(handle.db, GENESIS_DISCORD_ID)).toBe((75n * SOAG_PER_BOAG) / 2n);
+    expect(balanceOf(handle.db, BRAVO_ID)).toBe((25n * SOAG_PER_BOAG) / 2n);
+
+    const html = await (await client.get('/boag?done=sent')).text();
+    expect(html).toContain('送りました');
+    expect(html).toContain('このあいだのぶん');
+    expect(html).toContain('ブラボー');
+
+    // 受け取った側にも同じ動きが出る。
+    const bravo = await signInAs('bravo', BRAVO_ID);
+    const received = await (await bravo.get('/boag')).text();
+    expect(received).toContain('受け取り');
+    expect(received).toContain('12.5');
+  });
+
+  it('残高を超えては送れない', async () => {
+    const client = await signIn();
+    const res = await client.post('/boag/send', { toMemberId: BRAVO_ID, amount: '1' });
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain('残高が足りません');
+    expect(balanceOf(handle.db, BRAVO_ID)).toBe(0n);
+  });
+
+  it('自分は宛先に出ず、直に指されても断る', async () => {
+    mint(handle.db, { to: GENESIS_DISCORD_ID, amount: SOAG_PER_BOAG, ref: 'test' });
+    const client = await signIn();
+
+    const html = await (await client.get('/boag')).text();
+    expect(html).not.toContain(`value="${GENESIS_DISCORD_ID}"`);
+
+    const res = await client.post('/boag/send', { toMemberId: GENESIS_DISCORD_ID, amount: '1' });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain('自分には送れません');
+  });
+
+  it('有効でないメンバーには送れない', async () => {
+    mint(handle.db, { to: GENESIS_DISCORD_ID, amount: SOAG_PER_BOAG, ref: 'test' });
+    setMemberStatus(handle.db, BRAVO_ID, 'suspended', Date.now());
+
+    const client = await signIn();
+    const res = await client.post('/boag/send', { toMemberId: BRAVO_ID, amount: '1' });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain('受け取れない');
   });
 });
 

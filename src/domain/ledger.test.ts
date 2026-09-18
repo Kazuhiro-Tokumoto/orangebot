@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { verifyAuditLog } from '../db/audit.js';
 import { openTestDatabase, type Database_ } from '../db/client.js';
-import { getMemberByUsername, listActiveMembers } from '../db/members.js';
+import { getMemberByUsername, listActiveMembers, setMemberStatus } from '../db/members.js';
 import { ledgerEntries } from '../db/schema.js';
 import {
   LedgerError,
@@ -14,6 +14,8 @@ import {
   mint,
   parseAmount,
   post,
+  recentMovements,
+  sendToMember,
   totalIssued,
   transfer,
   verifyLedger,
@@ -205,6 +207,104 @@ describe('送金', () => {
     const rows = historyOf(db(), idOf('second'));
     expect(rows).toHaveLength(1);
     expect(rows[0]?.memo).toBe('おつかれさま');
+  });
+});
+
+describe('メンバー同士のやりとり', () => {
+  beforeEach(() => {
+    addActiveMember('kazuhiro', 'second');
+    mint(db(), { to: idOf('kazuhiro'), amount: SOAG_PER_BOAG * 5n, ref: 'p1', now: T0 });
+  });
+
+  it('画面の入力そのままで送れる', () => {
+    const result = sendToMember(db(), {
+      fromMemberId: idOf('kazuhiro'),
+      toMemberId: idOf('second'),
+      amount: '1.5',
+      memo: 'ありがとう',
+      now: T0 + 1000,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(balanceOf(db(), idOf('second'))).toBe((SOAG_PER_BOAG * 3n) / 2n);
+    expect(balanceOf(db(), idOf('kazuhiro'))).toBe((SOAG_PER_BOAG * 7n) / 2n);
+    expect(verifyLedger(db()).ok).toBe(true);
+  });
+
+  it('0 以下や読めない額は断る', () => {
+    for (const amount of ['0', '-1', 'いくらか', '']) {
+      const result = sendToMember(db(), {
+        fromMemberId: idOf('kazuhiro'),
+        toMemberId: idOf('second'),
+        amount,
+        now: T0 + 1000,
+      });
+      expect(result.ok).toBe(false);
+    }
+    expect(balanceOf(db(), idOf('kazuhiro'))).toBe(SOAG_PER_BOAG * 5n);
+  });
+
+  it('いないメンバーには送れない', () => {
+    const result = sendToMember(db(), {
+      fromMemberId: idOf('kazuhiro'),
+      toMemberId: '1700000000000000999',
+      amount: '1',
+      now: T0 + 1000,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('宛先');
+  });
+
+  it('有効でないメンバーは受け取れない', () => {
+    setMemberStatus(db(), idOf('second'), 'suspended', T0 + 500);
+    const result = sendToMember(db(), {
+      fromMemberId: idOf('kazuhiro'),
+      toMemberId: idOf('second'),
+      amount: '1',
+      now: T0 + 1000,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('受け取れない');
+  });
+
+  it('有効でないメンバーは送れない', () => {
+    setMemberStatus(db(), idOf('kazuhiro'), 'suspended', T0 + 500);
+    const result = sendToMember(db(), {
+      fromMemberId: idOf('kazuhiro'),
+      toMemberId: idOf('second'),
+      amount: '1',
+      now: T0 + 1000,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it('動きの一覧に相手と向きが出る', () => {
+    sendToMember(db(), {
+      fromMemberId: idOf('kazuhiro'),
+      toMemberId: idOf('second'),
+      amount: '2',
+      memo: 'おつかれさま',
+      now: T0 + 1000,
+    });
+
+    const sent = recentMovements(db(), idOf('kazuhiro'));
+    expect(sent[0]).toMatchObject({
+      kind: 'transfer',
+      amount: -SOAG_PER_BOAG * 2n,
+      counterparty: idOf('second'),
+      memo: 'おつかれさま',
+    });
+
+    const received = recentMovements(db(), idOf('second'));
+    expect(received[0]).toMatchObject({
+      kind: 'transfer',
+      amount: SOAG_PER_BOAG * 2n,
+      counterparty: idOf('kazuhiro'),
+    });
+
+    // 発行は特別口座からの動きとして出る。
+    const mintRow = sent.find((movement) => movement.kind === 'mint');
+    expect(mintRow?.counterparty).toBe(SUPPLY_ACCOUNT);
   });
 });
 
