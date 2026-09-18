@@ -1228,6 +1228,27 @@ describe('交換の API', () => {
     expect((await call('GET', '/api/orangebot-boag-pt-exchange/v1/rate')).status).toBe(503);
   });
 
+  it('JSON の応答は UTF-8 だと名乗る。名乗らないと日本語の文言が化けて見える', async () => {
+    const unsigned = await app.request(`${ORIGIN}/api/orangebot-boag-pt-exchange/v1/deposits`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: depositBody('oogiri-9', '1'),
+    });
+    expect(unsigned.status).toBe(401);
+    expect(unsigned.headers.get('content-type')).toBe('application/json; charset=utf-8');
+    expect(await unsigned.text()).toContain('署名');
+
+    const missing = await app.request(`${ORIGIN}/api/orangebot-boag-pt-exchange/v1/nothing`);
+    expect(missing.headers.get('content-type')).toBe('application/json; charset=utf-8');
+
+    const health = await app.request(`${ORIGIN}/api/orangebot-boag-pt-exchange/v1/health`);
+    expect(health.headers.get('content-type')).toBe('application/json; charset=utf-8');
+
+    // 画面は c.html が付けているので、二重には付けない。
+    const page = await new Client().get('/status');
+    expect(page.headers.get('content-type')).toBe('text/html; charset=UTF-8');
+  });
+
   it('生存の確認は署名なしで通り、止めていてもそう答える', async () => {
     const open = await app.request(`${ORIGIN}/api/orangebot-boag-pt-exchange/v1/health`);
     expect(open.status).toBe(200);
