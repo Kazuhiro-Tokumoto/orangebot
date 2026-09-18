@@ -159,6 +159,7 @@ export function Layout(props: LayoutProps) {
                   ? html`<a href="/login">ログイン</a>`
                   : html`<a href="/timeline">タイムライン</a>
                       <a href="/predict">予想</a>
+                      <a href="/boag">BOAG</a>
                       <a href="/exchange">交換</a>
                       <a href="/proposals">提案</a>
                       <a href="/wallet">ウォレット</a>

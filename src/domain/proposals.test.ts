@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { verifyAuditLog } from '../db/audit.js';
 import { openTestDatabase, type Database_ } from '../db/client.js';
 import { getMemberByUsername, listActiveMembers, listAllMembers } from '../db/members.js';
-import { activateMember, createGenesisMember } from './members.js';
+import { balanceOf, historyOf, mint } from './ledger.js';
+import { activateMember, createGenesisMember, issueEnrollLink } from './members.js';
 import {
   DEFAULT_PROPOSAL_TTL_MS,
   castVote,
@@ -393,6 +394,138 @@ describe('除名と停止', () => {
     });
     expect(final.ok).toBe(true);
     if (final.ok) expect(final.view.status).toBe('executed');
+  });
+});
+
+describe('除名解除', () => {
+  /** 提案を出して、残りの有権者の賛成で通しきる。 */
+  function decide(
+    type: 'member.remove' | 'member.reinstate',
+    proposer: string,
+    subject: string,
+    now: number,
+  ) {
+    const created = createProposal(db(), {
+      type,
+      proposedBy: idOf(proposer),
+      subjectMemberId: idOf(subject),
+      now,
+    });
+    if (!created.ok) throw new Error(created.reason);
+
+    let view = created.view;
+    for (const voter of listActiveMembers(db())) {
+      if (view.status !== 'open') break;
+      if (voter.id === idOf(proposer)) continue;
+      const voted = castVote(db(), {
+        proposalId: view.id,
+        memberId: voter.id,
+        choice: 'approve',
+        now,
+      });
+      if (voted.ok) view = voted.view;
+    }
+    return view;
+  }
+
+  beforeEach(() => {
+    addActiveMember('kazuhiro', 'bravo');
+    addActiveMember('kazuhiro', 'carol');
+    mint(db(), { to: idOf('carol'), amount: 1234n, ref: 'p0', now: T0 });
+    expect(decide('member.remove', 'kazuhiro', 'carol', T0 + 1000).status).toBe('executed');
+    expect(getMemberByUsername(db(), 'carol')?.status).toBe('removed');
+  });
+
+  it('除名済みのメンバーを復帰の対象にできる', () => {
+    const view = decide('member.reinstate', 'kazuhiro', 'carol', T0 + 2000);
+    expect(view.status).toBe('executed');
+    expect(view.summary).toContain('除名解除');
+  });
+
+  it('復帰しても登録が済むまでは有権者に戻らない', () => {
+    decide('member.reinstate', 'kazuhiro', 'carol', T0 + 2000);
+
+    // 資格情報は除名のときに消えている。登録し直すまで active にはしない。
+    expect(getMemberByUsername(db(), 'carol')?.status).toBe('pending');
+    expect(listActiveMembers(db())).toHaveLength(2);
+
+    // 登録リンクを出して、本人が登録を終えれば有権者に戻る。
+    const link = issueEnrollLink(db(), {
+      memberId: idOf('carol'),
+      actorMemberId: idOf('kazuhiro'),
+    });
+    expect(link.ok).toBe(true);
+    if (!link.ok) return;
+    expect(findUsableTicket(db(), 'enroll', link.token, T0 + 3000).ok).toBe(true);
+
+    activateMember(db(), idOf('carol'), T0 + 4000);
+    expect(listActiveMembers(db())).toHaveLength(3);
+  });
+
+  it('残高と台帳の履歴はそのまま引き継ぐ', () => {
+    expect(balanceOf(db(), idOf('carol'))).toBe(1234n);
+    decide('member.reinstate', 'kazuhiro', 'carol', T0 + 2000);
+    expect(balanceOf(db(), idOf('carol'))).toBe(1234n);
+    expect(historyOf(db(), idOf('carol'))).toHaveLength(1);
+  });
+
+  it('有効なメンバーは復帰の対象にできない', () => {
+    const result = createProposal(db(), {
+      type: 'member.reinstate',
+      proposedBy: idOf('kazuhiro'),
+      subjectMemberId: idOf('bravo'),
+      now: T0 + 2000,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('復帰させられるのは');
+  });
+
+  it('復帰の提案では対象者を除かない（そもそも有権者にいない）', () => {
+    const created = createProposal(db(), {
+      type: 'member.reinstate',
+      proposedBy: idOf('kazuhiro'),
+      subjectMemberId: idOf('carol'),
+      now: T0 + 2000,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(created.view.tally.eligible).not.toContain(idOf('carol'));
+    expect(created.view.tally.electorateSize).toBe(2);
+  });
+
+  it('復帰の提案が 2 本通っても、登録を飛ばして有効にはならない', () => {
+    // 2 本立てておいてから順に通す。2 本目が実行されるとき、対象は既に登録待ち。
+    const first = createProposal(db(), {
+      type: 'member.reinstate',
+      proposedBy: idOf('kazuhiro'),
+      subjectMemberId: idOf('carol'),
+      now: T0 + 2000,
+    });
+    const second = createProposal(db(), {
+      type: 'member.reinstate',
+      proposedBy: idOf('bravo'),
+      subjectMemberId: idOf('carol'),
+      now: T0 + 2000,
+    });
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+
+    castVote(db(), {
+      proposalId: first.view.id,
+      memberId: idOf('bravo'),
+      choice: 'approve',
+      now: T0 + 3000,
+    });
+    expect(getMemberByUsername(db(), 'carol')?.status).toBe('pending');
+
+    castVote(db(), {
+      proposalId: second.view.id,
+      memberId: idOf('kazuhiro'),
+      choice: 'approve',
+      now: T0 + 4000,
+    });
+    expect(getMemberByUsername(db(), 'carol')?.status).toBe('pending');
+    expect(listActiveMembers(db())).toHaveLength(2);
   });
 });
 

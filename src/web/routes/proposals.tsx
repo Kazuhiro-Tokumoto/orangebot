@@ -1,5 +1,5 @@
 import { Hono, type Context } from 'hono';
-import { getMember, listActiveMembers, listMembers } from '../../db/members.js';
+import { getMember, listActiveMembers, listAllMembers } from '../../db/members.js';
 import type { MemberRow } from '../../db/schema.js';
 import {
   PROPOSAL_TYPE_LABELS,
@@ -126,6 +126,7 @@ function ProposalsPage(props: {
   const others = props.active.filter((m) => m.id !== props.viewer.id);
   const pending = props.members.filter((m) => m.status === 'pending');
   const suspended = props.members.filter((m) => m.status === 'suspended');
+  const removed = props.members.filter((m) => m.status === 'removed');
   const required = requiredApprovals(props.active.length);
 
   const memberOptions = others.map((m) => ({ value: m.id, label: `${m.displayName}（${m.username}）` }));
@@ -202,8 +203,11 @@ function ProposalsPage(props: {
         <strong>メンバーの状態を変える</strong>
         <p class="field-hint" style="margin:4px 0 14px">
           除名と一時停止では、対象の本人は投票できません。最後の 1 人は除名も停止もできません。
+          除名済みの人も復帰させられます。ただし除名のときに資格情報を消しているので、
+          可決すると登録待ちに戻り、本人が登録リンクからパスワードと二要素を入れ直すまでは
+          有権者に数えません。残高と台帳の履歴はそのまま引き継がれます。
         </p>
-        {memberOptions.length === 0 && suspended.length === 0 ? (
+        {memberOptions.length === 0 && suspended.length === 0 && removed.length === 0 ? (
           <span class="muted">対象にできる相手がいません。</span>
         ) : (
           <form class="stack" method="post" action="/proposals/member-status">
@@ -216,6 +220,10 @@ function ProposalsPage(props: {
                   value: m.id,
                   label: `${m.displayName}（停止中）`,
                 })),
+                ...removed.map((m) => ({
+                  value: m.id,
+                  label: `${m.displayName}（除名済み）`,
+                })),
               ]}
             />
             <Select
@@ -223,7 +231,7 @@ function ProposalsPage(props: {
               name="type"
               options={[
                 { value: 'member.suspend', label: '一時停止する' },
-                { value: 'member.reinstate', label: '停止を解いて復帰させる' },
+                { value: 'member.reinstate', label: '復帰させる（停止解除・除名解除）' },
                 { value: 'member.remove', label: '除名する' },
                 { value: 'credential.factor_reset', label: '二要素認証を再登録させる' },
               ]}
@@ -313,10 +321,11 @@ export function proposalRoutes(deps: RouteDeps) {
     settleExpired(deps.db, now);
 
     const all = listProposals(deps.db, {}, now);
+    // 除名済みも渡す。復帰の対象に出すため、また過去の提案で名前を引くため。
     return c.html(
       <ProposalsPage
         viewer={viewer.member}
-        members={listMembers(deps.db)}
+        members={listAllMembers(deps.db)}
         active={listActiveMembers(deps.db)}
         open={all.filter((p) => p.status === 'open')}
         closed={all.filter((p) => p.status !== 'open')}
