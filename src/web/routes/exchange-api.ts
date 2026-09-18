@@ -2,8 +2,14 @@ import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { getMember } from '../../db/members.js';
 import { creditDeposit, getDeposit, type ExchangeErrorCode } from '../../domain/exchange.js';
-import { SOAG_PER_PT, toDecimalString } from '../../domain/units.js';
-import { SIGNATURE_HEADER, TIMESTAMP_HEADER, verify } from '../../exchange/signature.js';
+import { PT_PER_BOAG, SOAG_PER_PT, toDecimalString } from '../../domain/units.js';
+import {
+  SERVER_TIME_HEADER,
+  SIGNATURE_HEADER,
+  SIGNATURE_VERSION,
+  TIMESTAMP_HEADER,
+  verify,
+} from '../../exchange/signature.js';
 import type { RouteDeps } from '../context.js';
 
 /**
@@ -34,6 +40,29 @@ const STATUS_FOR: Readonly<Record<ExchangeErrorCode, 400 | 404 | 409 | 422>> = {
 export function exchangeApiRoutes(deps: RouteDeps) {
   const app = new Hono();
   const config = deps.env.exchange;
+
+  // どの応答にもこちらの時計を付ける。相手が「繋がらない」と「署名が合わない」と
+  // 「時計がずれている」を、秘密を持たずに切り分けられるようにするため。
+  app.use(`${EXCHANGE_API_PREFIX}/*`, async (c, next) => {
+    await next();
+    c.header(SERVER_TIME_HEADER, String(Math.floor(Date.now() / 1000)));
+  });
+
+  /**
+   * 生存の確認。ここだけ署名が要らない。
+   *
+   * 相手の bot は「不通」も「断られた」も同じ扱いにしがちなので、
+   * 秘密を持たない側からでも、口が開いているかだけは確かめられるようにしておく。
+   * 中身は設定の有無と時計だけで、残高も取引も出さない。
+   */
+  app.get(`${EXCHANGE_API_PREFIX}/health`, (c) =>
+    c.json({
+      ok: true,
+      version: SIGNATURE_VERSION,
+      exchange: config === undefined ? 'disabled' : 'enabled',
+      serverTime: Math.floor(Date.now() / 1000),
+    }),
+  );
 
   app.use(
     `${EXCHANGE_API_PREFIX}/*`,
@@ -80,11 +109,25 @@ export function exchangeApiRoutes(deps: RouteDeps) {
     };
   }
 
-  /** 換算の比。署名つきで取れるので、相手は表示に使ってよい。 */
+  /**
+   * 換算の比と、いま効いている入金の上限。署名つきで取れるので、相手は表示に使ってよい。
+   *
+   * 上限を返すのは、断られてから返金するより、送る前に相手が弾けたほうが早いため。
+   */
   app.get(`${EXCHANGE_API_PREFIX}/rate`, async (c) => {
     const auth = await authenticate(c);
     if (auth instanceof Response) return auth;
-    return c.json({ ptPerBoag: '10000000', soagPerPt: SOAG_PER_PT.toString(), decimals: 16 });
+    if (config === undefined) return fail(c, 503, 'disabled', '交換は止めてあります');
+
+    return c.json({
+      ptPerBoag: PT_PER_BOAG.toString(),
+      soagPerPt: SOAG_PER_PT.toString(),
+      decimals: 16,
+      limits: {
+        maxPtPerRequest: config.limits.maxPtPerRequest.toString(),
+        maxPtPerDay: config.limits.maxPtPerDay.toString(),
+      },
+    });
   });
 
   /** 入金の前に、宛先が有効なメンバーかを確かめる。 */

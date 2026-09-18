@@ -25,6 +25,13 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 export const SIGNATURE_VERSION = 'OBX1';
 export const TIMESTAMP_HEADER = 'x-exchange-timestamp';
 export const SIGNATURE_HEADER = 'x-exchange-signature';
+/**
+ * 応答に付けるこちらの時計 (Unix 秒)。
+ *
+ * 署名が通らなかった理由は返さない決まりだが、時計のずれだけは相手が自分で直せる。
+ * ずれは秘密の手掛かりにならないので、これだけは常に返す。
+ */
+export const SERVER_TIME_HEADER = 'x-exchange-server-time';
 /** 時計のずれとして許す幅。これより古い、または未来の要求は断る。 */
 export const MAX_CLOCK_SKEW_SECONDS = 300;
 

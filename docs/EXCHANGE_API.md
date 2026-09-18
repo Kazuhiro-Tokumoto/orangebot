@@ -14,6 +14,7 @@ orangebot 側の実装はこのリポジトリにあります。外部の bot �
 
 | 側 | URL | 呼ぶ人 |
 | --- | --- | --- |
+| orangebot | `https://mail.shudo-physics.com/api/orangebot-boag-pt-exchange/v1/health` | 外部の bot（署名不要） |
 | orangebot | `https://mail.shudo-physics.com/api/orangebot-boag-pt-exchange/v1/deposits` | 外部の bot |
 | orangebot | `https://mail.shudo-physics.com/api/orangebot-boag-pt-exchange/v1/deposits/{id}` | 外部の bot |
 | orangebot | `https://mail.shudo-physics.com/api/orangebot-boag-pt-exchange/v1/members/{discordId}` | 外部の bot |
@@ -79,9 +80,12 @@ orangebot は `id` で重複を見分けるので、何度送っても BOAG は 
 
 | 見出し | 値 |
 | --- | --- |
-| `X-Exchange-Timestamp` | Unix 秒の 10 進。例 `1789999999` |
+| `X-Exchange-Timestamp` | Unix 秒の 10 進。例 `1789999999`。**ミリ秒ではありません** (13 桁は断ります) |
 | `X-Exchange-Signature` | `v1=` に続けて、小文字 16 進の HMAC-SHA256 |
 | `Content-Type` | `application/json` |
+
+orangebot の応答には、成功でも失敗でも `X-Exchange-Server-Time` (こちらの時計、Unix 秒) が付きます。
+401 が返るときは、まずこれと自分の時計を比べてください。
 
 ### 署名する文字列
 
@@ -225,8 +229,33 @@ X-Exchange-Signature: v1=cdf3c8484205568766376d9109c3ccf5617573ac39e5771b7711481
 ### GET /api/orangebot-boag-pt-exchange/v1/rate
 
 ```json
-{ "ptPerBoag": "10000000", "soagPerPt": "1000000000", "decimals": 16 }
+{
+  "ptPerBoag": "10000000",
+  "soagPerPt": "1000000000",
+  "decimals": 16,
+  "limits": { "maxPtPerRequest": "100000000000", "maxPtPerDay": "1000000000000" }
+}
 ```
+
+`limits` はいま効いている**入金**の上限 (7 節) です。orangebot の管理者が変えると値も変わるので、
+起動時や 1 日 1 回取り直して、送る前に自分の側で弾けるようにしてください。
+上限は pt の 10 進文字列です。
+
+### GET /api/orangebot-boag-pt-exchange/v1/health
+
+**この口だけ署名が要りません。**繋がるかどうかを、秘密を使わずに確かめるためのものです。
+
+```json
+{ "ok": true, "version": "OBX1", "exchange": "enabled", "serverTime": 1789999999 }
+```
+
+| 項目 | 意味 |
+| --- | --- |
+| `version` | 署名の仕様の版。合わなければ署名の作り方が変わっています |
+| `exchange` | `enabled` なら交換を受け付けます。`disabled` なら止めてあります (他の口は 503) |
+| `serverTime` | orangebot の時計 (Unix 秒)。自分の時計と 300 秒以上ずれていたら直してください |
+
+残高も取引も、メンバーの一覧も出しません。
 
 ---
 
@@ -425,9 +454,55 @@ http.createServer(async (req, res) => {
 
 ---
 
-## 8. 確かめること
+## 8. 繋がらないときの切り分け
 
+「orangebot に繋がらない」と見えるもののうち、本当に届いていないのは一部です。
+**401 は届いています。**署名かタイムスタンプの問題なので、不通として扱わず、分けて記録してください。
+
+順に 1 つずつ確かめます。
+
+```bash
+# 1. 口が開いているか (署名不要)
+curl -i https://mail.shudo-physics.com/api/orangebot-boag-pt-exchange/v1/health
+
+# 2. 署名が通るか (自分の実装で署名を作って投げる)
+curl -i https://mail.shudo-physics.com/api/orangebot-boag-pt-exchange/v1/rate \
+  -H "x-exchange-timestamp: $TS" -H "x-exchange-signature: $SIG"
+```
+
+| 見えるもの | 意味 | すること |
+| --- | --- | --- |
+| 1 が繋がらない (ECONNREFUSED、タイムアウト) | 経路かサーバーが落ちている | orangebot の管理者に伝える。出金は `pending` のまま送り直す |
+| 1 が TLS の誤り (`unable to verify the first certificate` など) | 証明書の鎖が足りない | orangebot 側で `fullchain.pem` を使う。**回避のため検証を切らないこと** |
+| 1 が 200 で `"exchange":"disabled"` | 秘密が未設定で止まっている | orangebot の管理者に伝える (`partner_disabled`) |
+| 1 が 200、2 が 401 | 届いてはいるが署名が合わない | 下の「401 のとき」へ |
+| 2 が 404 `not_found` | パスが違う | 冒頭の「URL の一覧」と突き合わせる。末尾に `/` を付けない |
+| 2 が 200 | API は使えている | 入金の本文の形 (4 節) を見直す |
+
+### 401 のとき
+
+よくある順に並べています。
+
+1. **タイムスタンプがミリ秒**。`Date.now()` をそのまま入れると 13 桁になり、断られます。
+   `Math.floor(Date.now() / 1000)` の 10 桁です
+2. **時計がずれている**。応答の `X-Exchange-Server-Time` と比べて 300 秒以内に収めてください
+3. **本文を組み直している**。署名するのは**実際に送るバイト列そのもの**です。
+   `JSON.stringify` した文字列を変数に入れ、署名にも本文にも同じものを渡してください
+4. **GET の本文**。本文が無いときは空文字列 (`''`) をハッシュします。`undefined` や `{}` ではありません
+5. **パスの書き方**。署名に入れるのは `https://...` を含まないパスだけです。
+   クエリがあれば `?` 以降も含め、送る URL と 1 文字も違わないようにします
+6. **向き**。orangebot を呼ぶときは `to-orangebot` です。`from-orangebot` は受け口用で、通りません
+7. **秘密が違う**。前後の空白や改行が混ざっていないか確かめてください
+
+3 節の例の 2 つの署名が自分の実装で再現できるなら、1 から 6 のどれかです。
+
+---
+
+## 9. 確かめること
+
+- [ ] `GET /health` が 200 で `"exchange":"enabled"` を返す
 - [ ] 3 節の例の 2 つの署名が、自分の実装でも同じ値になる
+- [ ] 401 を「不通」と別に記録している (届いているので、送り直しでは直りません)
 - [ ] 受け口が、署名の違う要求に 401 を返す
 - [ ] 受け口が、同じ `id` を 2 回受けても pt を 1 回しか付けない
 - [ ] 受け口が、同じ `id` で `pt` が違う要求に 409 を返す

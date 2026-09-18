@@ -36,6 +36,23 @@ export function createApp(input: AppDeps) {
   const deps: RouteDeps = { ...input, notify: input.notify ?? nullNotifier };
   const app = new Hono<AppBindings>();
 
+  /**
+   * JSON の応答に文字の符号を書く。
+   *
+   * JSON は仕様の上では常に UTF-8 だが、`charset` の無い `application/json` を
+   * Shift_JIS と推測して表示する閲覧環境があり、日本語の文言が化けて見える。
+   * HTML には既に付いている (c.html が付ける) ので、ここは JSON だけを直す。
+   *
+   * 外部の bot 向けの API より前に置く。あとに置くと、先に応答を返す route には掛からない。
+   */
+  app.use('*', async (c, next) => {
+    await next();
+    const type = c.res.headers.get('content-type');
+    if (type !== null && type.startsWith('application/json') && !type.includes('charset')) {
+      c.header('content-type', `${type}; charset=utf-8`);
+    }
+  });
+
   // 外部の bot 向けの API は署名で守る。画面のセッションもクッキーも使わないので、
   // CSRF の検査とセッションの読み込みより前に切り分ける。
   app.route('/', exchangeApiRoutes(deps));
